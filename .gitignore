@@ -1,0 +1,26 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Generated data (huge CSVs)
+/data/log/
+/data/log_batch/
+
+# Training data / user models
+/strategy_train_env/data/
+/strategy_train_env/saved_model/
+/strategy_train_env/bidding_train_env/data/traffic/
+
+# User checkpoints
+/saved_model/
