@@ -3,7 +3,8 @@
 .vscode/
 *.swp
 *.swo
-
+*.csv
+*.pkl
 # macOS
 .DS_Store
 
