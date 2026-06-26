@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 STATE_DIM = 16
 
 def train_cql_model(train_data_path="./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv",
-                     step_num=100, save_dir="saved_model/CQLtest"):
+                     step_num=100, batch_size=100, save_dir="saved_model/CQLtest"):
     """
     Train the CQL model.
     """
@@ -49,7 +49,7 @@ def train_cql_model(train_data_path="./data/traffic/training_data_rlData_folder/
 
     # Train model
     model = CQL(dim_obs=STATE_DIM)
-    train_model_steps(model, replay_buffer, step_num=step_num)
+    train_model_steps(model, replay_buffer, step_num=step_num, batch_size=batch_size)
 
     # Save model
     # model.save_net(save_dir)
@@ -85,7 +85,7 @@ def test_trained_model(model, replay_buffer):
         tem = np.concatenate((actions, pred_actions), axis=1)
         print("concate:",tem)
 
-def run_cql(train_data_path=None, step_num=None, save_dir=None):
+def run_cql(train_data_path=None, step_num=None, batch_size=None, save_dir=None):
     print(sys.path)
     """
     Run CQL model training and evaluation.
@@ -93,6 +93,7 @@ def run_cql(train_data_path=None, step_num=None, save_dir=None):
     kwargs = {}
     if train_data_path: kwargs['train_data_path'] = train_data_path
     if step_num: kwargs['step_num'] = step_num
+    if batch_size: kwargs['batch_size'] = batch_size
     if save_dir: kwargs['save_dir'] = save_dir
     train_cql_model(**kwargs)
 

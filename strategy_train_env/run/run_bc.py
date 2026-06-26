@@ -17,20 +17,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_bc(train_data_path=None, step_num=None, save_dir=None):
+def run_bc(train_data_path=None, step_num=None, batch_size=None, save_dir=None):
     """
     Run bc model training and evaluation.
     """
     kwargs = {}
     if train_data_path: kwargs['train_data_path'] = train_data_path
     if step_num: kwargs['step_num'] = step_num
+    if batch_size: kwargs['batch_size'] = batch_size
     if save_dir: kwargs['save_dir'] = save_dir
     train_bc_model(**kwargs)
     # load_model()
 
 
 def train_bc_model(train_data_path="./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv",
-                     step_num=20000, save_dir="saved_model/BCtest"):
+                     step_num=20000, batch_size=100, save_dir="saved_model/BCtest"):
     """
     train BC model
     """
@@ -65,7 +66,6 @@ def train_bc_model(train_data_path="./data/traffic/training_data_rlData_folder/t
     logger.info(f"Replay buffer size: {len(replay_buffer.memory)}")
 
     model = BC(dim_obs=state_dim)
-    batch_size = 100
     for i in range(step_num):
         states, actions, _, _, _ = replay_buffer.sample(batch_size)
         a_loss = model.step(states, actions)

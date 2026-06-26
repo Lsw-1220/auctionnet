@@ -18,7 +18,7 @@ STATE_DIM = 16
 
 
 def train_bcq_model(train_data_path="./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv",
-                     step_num=100, save_dir="saved_model/BCQtest"):
+                     step_num=100, batch_size=100, save_dir="saved_model/BCQtest"):
     """
     Train the BCQ model.
     """
@@ -51,7 +51,7 @@ def train_bcq_model(train_data_path="./data/traffic/training_data_rlData_folder/
 
     # Train model
     model = BCQ(state_dim=STATE_DIM)
-    train_model_steps(model, replay_buffer, step_num=step_num)
+    train_model_steps(model, replay_buffer, step_num=step_num, batch_size=batch_size)
 
     # Save model
     # model.save_net(save_dir)
@@ -89,7 +89,7 @@ def test_trained_model(model, replay_buffer):
         print("concate:", tem)
 
 
-def run_bcq(train_data_path=None, step_num=None, save_dir=None):
+def run_bcq(train_data_path=None, step_num=None, batch_size=None, save_dir=None):
     print(sys.path)
     """
     Run BCQ model training and evaluation.
@@ -97,6 +97,7 @@ def run_bcq(train_data_path=None, step_num=None, save_dir=None):
     kwargs = {}
     if train_data_path: kwargs['train_data_path'] = train_data_path
     if step_num: kwargs['step_num'] = step_num
+    if batch_size: kwargs['batch_size'] = batch_size
     if save_dir: kwargs['save_dir'] = save_dir
     train_bcq_model(**kwargs)
 

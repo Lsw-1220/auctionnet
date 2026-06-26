@@ -112,26 +112,23 @@ python bidding_train_env/train_data_generator/train_data_generator.py
 ```
 
 #### Strategy Training (with configurable args)
-All strategy training scripts support `--data`, `--steps`, `--save` arguments:
+All strategy training scripts support `--data`, `--steps`, `--batch_size`, `--save` arguments:
 ```bash
 # IQL (offline RL)
 python main/main_iql.py \
     --data ./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv \
     --steps 100000 \
+    --batch_size 256 \
     --save ./saved_model/IQL_100k
 
-# BC (behavioral cloning)
-python main/main_bc.py --data <path> --steps <N> --save <dir>
+# BC / BCQ / CQL / TD3_BC / DT
+python main/main_bc.py --data <path> --steps <N> --batch_size <N> --save <dir>
+python main/main_bcq.py --data <path> --steps <N> --batch_size <N> --save <dir>
+python main/main_cql.py --data <path> --steps <N> --batch_size <N> --save <dir>
+python main/main_td3_bc.py --data <path> --steps <N> --batch_size <N> --save <dir>
+python main/main_decision_transformer.py --data <path> --steps <N> --batch_size <N> --save <dir>
 
-# BCQ / CQL / TD3_BC
-python main/main_bcq.py --data <path> --steps <N> --save <dir>
-python main/main_cql.py --data <path> --steps <N> --save <dir>
-python main/main_td3_bc.py --data <path> --steps <N> --save <dir>
-
-# Decision Transformer
-python main/main_decision_transformer.py --data <path> --steps <N> --save <dir>
-
-# OnlineLP (no --steps)
+# OnlineLP (no --steps/--batch_size)
 python main/main_onlineLp.py --data <path> --save <dir>
 ```
 Omit arguments to use defaults.
