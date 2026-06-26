@@ -119,6 +119,16 @@ python main/main_iql.py \
     --data ./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv \
     --steps 100000 --batch_size 256 --save ./saved_model/IQL_100k
 
+# IQL — multi-dataset (concatenates all matching CSVs)
+python main/main_iql.py \
+    --data "./data/traffic/period-7.csv,./data/traffic/period-8.csv,./data/traffic/period-9.csv" \
+    --steps 100000 --save ./saved_model/IQL_multi
+
+# IQL — glob pattern
+python main/main_iql.py \
+    --data "./data/traffic/period-*.csv" \
+    --steps 100000 --save ./saved_model/IQL_all
+
 # IQL — multi-GPU (DataParallel)
 python main/main_iql.py \
     --data ./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv \

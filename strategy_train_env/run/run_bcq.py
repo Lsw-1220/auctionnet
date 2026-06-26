@@ -23,7 +23,18 @@ def train_bcq_model(train_data_path="./data/traffic/training_data_rlData_folder/
     """
     Train the BCQ model.
     """
-    training_data = pd.read_csv(train_data_path)
+    import glob as _glob, re, re
+    paths = []
+    for p in re.split(r'[,s]+', train_data_path):
+            if not p.strip():
+                continue
+        p = p.strip()
+        matched = _glob.glob(p)
+        paths.extend(matched if matched else [p])
+    logger.info(f'Loading {len(paths)} data file(s): {paths}')
+    dfs = [pd.read_csv(p) for p in paths]
+    training_data = pd.concat(dfs, ignore_index=True)
+    logger.info(f'Total training samples: {len(training_data)}')
 
     def safe_literal_eval(val):
         if pd.isna(val):
