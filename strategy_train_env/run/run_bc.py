@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn as nn
 import pandas as pd
 from bidding_train_env.common.utils import normalize_state, normalize_reward, save_normalize_dict
 from bidding_train_env.baseline.iql.replay_buffer import ReplayBuffer
@@ -17,7 +18,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_bc(train_data_path=None, step_num=None, batch_size=None, save_dir=None):
+def run_bc(train_data_path=None, step_num=None, batch_size=None, save_dir=None,
+           device=None, multi_gpu=False):
     """
     Run bc model training and evaluation.
     """
@@ -26,12 +28,15 @@ def run_bc(train_data_path=None, step_num=None, batch_size=None, save_dir=None):
     if step_num: kwargs['step_num'] = step_num
     if batch_size: kwargs['batch_size'] = batch_size
     if save_dir: kwargs['save_dir'] = save_dir
+    if device: kwargs['device'] = device
+    kwargs['multi_gpu'] = multi_gpu
     train_bc_model(**kwargs)
     # load_model()
 
 
 def train_bc_model(train_data_path="./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv",
-                     step_num=20000, batch_size=100, save_dir="saved_model/BCtest"):
+                     step_num=20000, batch_size=100, save_dir="saved_model/BCtest",
+                     device="cuda", multi_gpu=False):
     """
     train BC model
     """
@@ -66,8 +71,19 @@ def train_bc_model(train_data_path="./data/traffic/training_data_rlData_folder/t
     logger.info(f"Replay buffer size: {len(replay_buffer.memory)}")
 
     model = BC(dim_obs=state_dim)
+    if device != "cpu" and torch.cuda.is_available():
+        model.to(device)
+        if multi_gpu and torch.cuda.device_count() > 1:
+            model = nn.DataParallel(model)
+            logger.info(f'Using {torch.cuda.device_count()} GPUs (DataParallel)')
+        else:
+            logger.info(f'Using device: {device}')
+    else:
+        logger.info('Using CPU')
     for i in range(step_num):
         states, actions, _, _, _ = replay_buffer.sample(batch_size)
+        if device != "cpu":
+            states, actions = states.to(device), actions.to(device)
         a_loss = model.step(states, actions)
         logger.info(f"Step: {i} Action loss: {np.mean(a_loss)}")
 

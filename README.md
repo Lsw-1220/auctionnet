@@ -112,25 +112,32 @@ python bidding_train_env/train_data_generator/train_data_generator.py
 ```
 
 #### Strategy Training (with configurable args)
-All strategy training scripts support `--data`, `--steps`, `--batch_size`, `--save` arguments:
+All strategy training scripts support `--data`, `--steps`, `--batch_size`, `--device`, `--multi_gpu`, `--save` arguments:
 ```bash
-# IQL (offline RL)
+# IQL — single GPU
 python main/main_iql.py \
     --data ./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv \
-    --steps 100000 \
-    --batch_size 256 \
-    --save ./saved_model/IQL_100k
+    --steps 100000 --batch_size 256 --save ./saved_model/IQL_100k
 
-# BC / BCQ / CQL / TD3_BC / DT
-python main/main_bc.py --data <path> --steps <N> --batch_size <N> --save <dir>
-python main/main_bcq.py --data <path> --steps <N> --batch_size <N> --save <dir>
-python main/main_cql.py --data <path> --steps <N> --batch_size <N> --save <dir>
-python main/main_td3_bc.py --data <path> --steps <N> --batch_size <N> --save <dir>
-python main/main_decision_transformer.py --data <path> --steps <N> --batch_size <N> --save <dir>
+# IQL — multi-GPU (DataParallel)
+python main/main_iql.py \
+    --data ./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv \
+    --steps 100000 --batch_size 512 --multi_gpu --save ./saved_model/IQL_100k
 
-# OnlineLP (no --steps/--batch_size)
+# IQL — CPU only
+python main/main_iql.py --data <path> --steps 100000 --device cpu --save <dir>
+
+# BC / BCQ / CQL / TD3_BC / Decision Transformer
+python main/main_bc.py --data <path> --steps <N> --batch_size <N> --multi_gpu --save <dir>
+python main/main_bcq.py --data <path> --steps <N> --batch_size <N> --multi_gpu --save <dir>
+python main/main_cql.py --data <path> --steps <N> --batch_size <N> --multi_gpu --save <dir>
+python main/main_td3_bc.py --data <path> --steps <N> --batch_size <N> --multi_gpu --save <dir>
+python main/main_decision_transformer.py --data <path> --steps <N> --batch_size <N> --multi_gpu --save <dir>
+
+# OnlineLP (no --steps/--batch_size/--device)
 python main/main_onlineLp.py --data <path> --save <dir>
 ```
+Omit arguments to use defaults. `--multi_gpu` wraps the model in `nn.DataParallel` across all available GPUs.
 Omit arguments to use defaults.
 
 Use the trained strategy as PlayerBiddingStrategy:

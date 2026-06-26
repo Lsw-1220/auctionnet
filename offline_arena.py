@@ -305,16 +305,26 @@ if __name__ == '__main__':
         return OnlineLpBiddingStrategy(budget=budget, cpa=cpa, category=category,
                                        name='OnlineLP', episode=0)
 
-    # Try importing DGAB
+    # Try importing GAVE and DGAB
     try:
-        from simul_bidding_env.strategy.autobidding_agents import DGABFOAuctionNetAgent
+        from simul_bidding_env.strategy.autobidding_agents import (
+            GAVEAuctionNetAgent, DGABFOAuctionNetAgent)
         BLOCK_CONFIG = {
             'n_ctx': 1024, 'n_embd': 512, 'n_layer': 8, 'n_head': 16,
             'n_inner': 1024, 'activation_function': 'relu', 'n_position': 1024,
             'resid_pdrop': 0.1, 'attn_pdrop': 0.1,
         }
+        GAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/gave_400k_sparse'
         DGAB_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_400k_sparse'
         DEVICE = 'cpu'
+
+        def _gave(budget, cpa, category):
+            return GAVEAuctionNetAgent(
+                budget=budget, cpa=cpa, category=category, name='GAVE',
+                model_param=dict(
+                    save_dir=GAVE_DIR, hidden_size=512, time_dim=8,
+                    block_config=BLOCK_CONFIG, device=DEVICE,
+                    expectile=0.99, score_target_mode='prev'))
 
         def _dgab(budget, cpa, category):
             return DGABFOAuctionNetAgent(
@@ -323,13 +333,13 @@ if __name__ == '__main__':
                     save_dir=DGAB_DIR, hidden_size=512, max_ep_len=96,
                     time_dim=8, block_config=BLOCK_CONFIG, device=DEVICE,
                     actor_type='stack', critic_type='sequence'))
-        HAS_DGAB = True
+        HAS_CUSTOM = True
     except Exception as e:
-        logger.warning(f'DGAB not available: {e}')
-        HAS_DGAB = False
+        logger.warning(f'Custom agents not available: {e}')
+        HAS_CUSTOM = False
 
     AGENTS = [('PID', _pid), ('IQL', _iql), ('OnlineLP', _onlinelp)]
-    if HAS_DGAB:
-        AGENTS.append(('DGAB-FO', _dgab))
+    if HAS_CUSTOM:
+        AGENTS.extend([('GAVE', _gave), ('DGAB-FO', _dgab)])
 
     compare(PLAYER_INDEX, AGENTS)

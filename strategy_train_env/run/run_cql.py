@@ -1,10 +1,10 @@
 import numpy as np
 import torch
+import torch.nn as nn
 import logging
 from bidding_train_env.common.utils import normalize_state, normalize_reward, save_normalize_dict
 from bidding_train_env.baseline.iql.replay_buffer import ReplayBuffer
 from bidding_train_env.baseline.cql.cql import CQL
-import sys
 import pandas as pd
 import ast
 import pickle
@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 STATE_DIM = 16
 
 def train_cql_model(train_data_path="./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv",
-                     step_num=100, batch_size=100, save_dir="saved_model/CQLtest"):
+                     step_num=100, batch_size=100, save_dir="saved_model/CQLtest",
+                     device="cuda", multi_gpu=False):
     """
     Train the CQL model.
     """
@@ -49,7 +50,16 @@ def train_cql_model(train_data_path="./data/traffic/training_data_rlData_folder/
 
     # Train model
     model = CQL(dim_obs=STATE_DIM)
-    train_model_steps(model, replay_buffer, step_num=step_num, batch_size=batch_size)
+    if device != "cpu" and torch.cuda.is_available():
+        model.to(device)
+        if multi_gpu and torch.cuda.device_count() > 1:
+            model = nn.DataParallel(model)
+            logger.info(f'Using {torch.cuda.device_count()} GPUs (DataParallel)')
+        else:
+            logger.info(f'Using device: {device}')
+    else:
+        logger.info('Using CPU')
+    train_model_steps(model, replay_buffer, step_num=step_num, batch_size=batch_size, device=device)
 
     # Save model
     # model.save_net(save_dir)
@@ -69,11 +79,15 @@ def add_to_replay_buffer(replay_buffer, training_data, is_normalize):
             replay_buffer.push(np.array(state), np.array([action]), np.array([reward]), np.zeros_like(state),
                                np.array([done]))
 
-def train_model_steps(model, replay_buffer, step_num=100, batch_size=100):
+def train_model_steps(model, replay_buffer, step_num=100, batch_size=100, device="cuda"):
     for i in range(step_num):
         if i==8000:
             pass
         states, actions, rewards, next_states, terminals = replay_buffer.sample(batch_size)
+        if device != "cpu":
+            states, actions = states.to(device), actions.to(device)
+            rewards, next_states = rewards.to(device), next_states.to(device)
+            terminals = terminals.to(device)
         q_loss, v_loss, a_loss = model.step(states, actions, rewards, next_states, terminals)
         logger.info(f'Step: {i} Q_loss: {q_loss} V_loss: {v_loss} A_loss: {a_loss}')
 
@@ -85,8 +99,8 @@ def test_trained_model(model, replay_buffer):
         tem = np.concatenate((actions, pred_actions), axis=1)
         print("concate:",tem)
 
-def run_cql(train_data_path=None, step_num=None, batch_size=None, save_dir=None):
-    print(sys.path)
+def run_cql(train_data_path=None, step_num=None, batch_size=None, save_dir=None,
+           device=None, multi_gpu=False):
     """
     Run CQL model training and evaluation.
     """
@@ -95,6 +109,8 @@ def run_cql(train_data_path=None, step_num=None, batch_size=None, save_dir=None)
     if step_num: kwargs['step_num'] = step_num
     if batch_size: kwargs['batch_size'] = batch_size
     if save_dir: kwargs['save_dir'] = save_dir
+    if device: kwargs['device'] = device
+    kwargs['multi_gpu'] = multi_gpu
     train_cql_model(**kwargs)
 
 if __name__ == '__main__':

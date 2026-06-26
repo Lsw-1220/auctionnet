@@ -17,5 +17,8 @@ if __name__ == "__main__":
     parser.add_argument("--steps", type=int, default=None, help="Training steps")
     parser.add_argument("--batch_size", type=int, default=None, help="Batch size")
     parser.add_argument("--save", type=str, default=None, help="Model save directory")
+    parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
+    parser.add_argument("--multi_gpu", action="store_true", help="Use DataParallel on all GPUs")
     args = parser.parse_args()
-    run_iql(train_data_path=args.data, step_num=args.steps, batch_size=args.batch_size, save_dir=args.save)
+    run_iql(train_data_path=args.data, step_num=args.steps, batch_size=args.batch_size,
+            save_dir=args.save, device=args.device, multi_gpu=args.multi_gpu)
