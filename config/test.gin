@@ -10,8 +10,8 @@ RESERVE_PV_PRICE = 0.0001
 MIN_REMAINING_BUDGET = 0.1
 
 # Number of traffic
-#PVNUM = 500000
-PVNUM = 250000
+PVNUM = 500000
+#PVNUM = 250000
 
 # Number of categories for advertisers
 NUM_CATERORY = 6

@@ -101,44 +101,103 @@ $ pip install -r requirements.txt
 ### Train Strategy & Offline Evaluation
 *For detailed usage, please refer to `strategy_train_env/README_strategy_train.md`.*
 
+```bash
+cd strategy_train_env
 ```
-cd strategy_train_env  # Enter the strategy_train directory
-```
+
 #### Data Processing
-Run this script to convert the raw data on ad opportunities granularity into trajectory data required for model training.
-```
-python  bidding_train_env/train_data_generator/train_data_generator.py
-```
-
-#### Strategy Training
-Load the training data and train the xxx (for example, IQL) bidding strategy.
-```
-python main/main_iql.py 
+Convert raw ad-opportunity data into trajectory data for model training:
+```bash
+python bidding_train_env/train_data_generator/train_data_generator.py
 ```
 
-Use the xxxBiddingStrategy as the PlayerBiddingStrategy for evaluation.
+#### Strategy Training (with configurable args)
+All strategy training scripts support `--data`, `--steps`, `--save` arguments:
+```bash
+# IQL (offline RL)
+python main/main_iql.py \
+    --data ./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv \
+    --steps 100000 \
+    --save ./saved_model/IQL_100k
+
+# BC (behavioral cloning)
+python main/main_bc.py --data <path> --steps <N> --save <dir>
+
+# BCQ / CQL / TD3_BC
+python main/main_bcq.py --data <path> --steps <N> --save <dir>
+python main/main_cql.py --data <path> --steps <N> --save <dir>
+python main/main_td3_bc.py --data <path> --steps <N> --save <dir>
+
+# Decision Transformer
+python main/main_decision_transformer.py --data <path> --steps <N> --save <dir>
+
+# OnlineLP (no --steps)
+python main/main_onlineLp.py --data <path> --save <dir>
 ```
-bidding_train_env/strategy/__init__.py
+Omit arguments to use defaults.
+
+Use the trained strategy as PlayerBiddingStrategy:
+```python
+# bidding_train_env/strategy/__init__.py
 from .iql_bidding_strategy import IqlBiddingStrategy as PlayerBiddingStrategy
 ```
 
 #### Offline Evaluation
-Load the raw data on ad opportunities granularity to construct an offline evaluation environment for assessing the bidding strategy offline.
-```
+```bash
 python main/main_test.py
 ```
 
 ### Online Evaluation
-Set up the hyperparameters for the online evaluation process.
-```
-config/test.gin
+
+Configure `config/test.gin`:
+```python
+PVNUM = 500000          # total PVs per period
+NUM_EPISODE = 1         # number of periods
+GENERATE_LOG = True     # save bidding logs to data/log/
+Controller.pv_generator_type = "neuripsPvGen"  # or "modelPvGen"
+Controller.pv_num = %PVNUM
 ```
 
-Run online evaluation.
+Run:
 ```bash
 # Return to the root directory
-$ python main_test.py
+python main_test.py
 ```
+
+### Online Strategy Comparison (`test_autobidding_online.py`)
+Compare multiple strategies (including custom GAVE/DGAB models) in the same online environment against all 48 advertisers:
+```bash
+python test_autobidding_online.py
+```
+Edit `ALL_AGENTS` in the script to choose which strategies to compare. Outputs per-tick budget/cost/reward and final aggregate scores across all 48 advertiser slots.
+
+### Offline Arena (`offline_arena.py`)
+Replay historical PV data with custom strategy lineups competing online-style:
+```bash
+python offline_arena.py                          # default: advertiser #0
+python offline_arena.py --player 4               # test advertiser #4 (budget=4800, CPA=60)
+```
+Edit `AGENTS` list to add your strategies.
+
+### Batch Data Generation (`batch_generate.py`)
+Generate multiple periods of bidding logs with diverse strategy lineups:
+```bash
+python batch_generate.py --start 0 --end 1000 --pv_num 500000 --generator mix
+
+# Parallel execution
+python batch_generate.py --start 0 --end 5000 --output_dir data/log_batch &
+python batch_generate.py --start 5000 --end 10000 --output_dir data/log_batch &
+```
+
+### PvGenerator Configuration
+Edit `simul_bidding_env/PvGenerator/NeurIPSPvGen.py` to adjust pValue density:
+```python
+self.pvalue_mean_base = 0.0005    # global pValue mean (higher = denser traffic)
+self.pvalue_std_ratio_mean = 0.5  # CV of pValue distribution (higher = more spread)
+```
+Two generator types (set via `config/test.gin`):
+- `neuripsPvGen`: Statistical generation, unlimited PVs
+- `modelPvGen`: Deep generative model (PvModel), realistic 340-dim user features, max 105k PVs
 
 ## 📖 User Case
 ### Train your own bidding strategy 'awesome_xx'

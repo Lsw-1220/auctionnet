@@ -38,7 +38,7 @@ class NeurIPSPvGen:
         self.pvalue_mean_by_same_category_ratio_scale = 0.5
         self.pvalue_mean_by_same_category_ratio_window = 8
 
-        self.pvalue_std_ratio_mean = 0.5
+        self.pvalue_std_ratio_mean = 0.7
         self.pvalue_std_ratio_std = 0.1
         self.pvalue_std_ratio_by_diff_tick_scale = 0.2
 
@@ -138,7 +138,7 @@ class NeurIPSPvGen:
             means = pvalue_mean_all_agent[:, i]
             stds = pvalue_std_all_agent[:, i]
             tick_traffic = rg.normal(means, stds, (int(num_traffic), self.NUM_AGENT))
-            tick_traffic[tick_traffic < 0] = 0
+            tick_traffic = np.abs(tick_traffic)  # no artificial zero spike
             tick_traffic[tick_traffic > 1] = 1
             traffic_list.append(tick_traffic)
 

@@ -15,11 +15,11 @@ logger = logging.getLogger(__name__)
 
 STATE_DIM = 16
 
-def train_cql_model():
+def train_cql_model(train_data_path="./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv",
+                     step_num=100, save_dir="saved_model/CQLtest"):
     """
     Train the CQL model.
     """
-    train_data_path = "./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv"
     training_data = pd.read_csv(train_data_path)
 
     def safe_literal_eval(val):
@@ -40,7 +40,7 @@ def train_cql_model():
     if is_normalize:
         normalize_dic = normalize_state(training_data, STATE_DIM, normalize_indices=[13, 14, 15])
         training_data['reward'] = normalize_reward(training_data, "reward_continuous")
-        save_normalize_dict(normalize_dic, "saved_model/CQLtest")
+        save_normalize_dict(normalize_dic, save_dir)
 
     # Build replay buffer
     replay_buffer = ReplayBuffer()
@@ -49,11 +49,11 @@ def train_cql_model():
 
     # Train model
     model = CQL(dim_obs=STATE_DIM)
-    train_model_steps(model, replay_buffer)
+    train_model_steps(model, replay_buffer, step_num=step_num)
 
     # Save model
-    # model.save_net("saved_model/CQLtest")
-    model.save_jit("saved_model/CQLtest")
+    # model.save_net(save_dir)
+    model.save_jit(save_dir)
 
     # Test trained model
     test_trained_model(model, replay_buffer)
@@ -85,12 +85,16 @@ def test_trained_model(model, replay_buffer):
         tem = np.concatenate((actions, pred_actions), axis=1)
         print("concate:",tem)
 
-def run_cql():
+def run_cql(train_data_path=None, step_num=None, save_dir=None):
     print(sys.path)
     """
     Run CQL model training and evaluation.
     """
-    train_cql_model()
+    kwargs = {}
+    if train_data_path: kwargs['train_data_path'] = train_data_path
+    if step_num: kwargs['step_num'] = step_num
+    if save_dir: kwargs['save_dir'] = save_dir
+    train_cql_model(**kwargs)
 
 if __name__ == '__main__':
     run_cql()

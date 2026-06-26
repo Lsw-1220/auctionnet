@@ -62,8 +62,8 @@ BLOCK_CONFIG = {
     'resid_pdrop': 0.1, 'attn_pdrop': 0.1,
 }
 
-GAVE_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/gave_cpu'
-DGAB_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_v2_scale'  # <-- UPDATE THIS
+GAVE_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/gave_400k_rc'
+DGAB_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_400k_rc'  # <-- UPDATE THIS
 
 DEVICE = 'cuda:0' if __import__('torch').cuda.is_available() else 'cpu'
 NUM_EPISODE = 1          # number of episodes to run per agent
@@ -171,24 +171,29 @@ def make_onlinelp_agent(budget, cpa, category):
 
 
 # ── All strategies for comparison ──
+# ALL_AGENTS = [
+#     # User's custom strategies
+#     ('GAVE',        make_gave_agent),
+#     ('DGAB-FO',     make_dgab_agent),
+#     # Project baselines — RL-based
+#     ('IQL',         make_iql_agent),
+#     ('BC',          make_bc_agent),
+#     ('BCQ',         make_bcq_agent),
+#     ('TD3_BC',      make_td3bc_agent),
+#     ('CQL',         make_cql_agent),
+#     ('MBRL_MOPO',   make_mbrl_mopo_agent),
+#     ('MBRL_Combo',  make_mbrl_combo_agent),
+#     # Project baselines — classical
+#     ('OnlineLP',    make_onlinelp_agent),
+#     ('PID',         make_pid_agent),
+#     ('Abid',        make_abid_agent),
+# ]
 ALL_AGENTS = [
     # User's custom strategies
     ('GAVE',        make_gave_agent),
-    ('DGAB-FO',     make_dgab_agent),
-    # Project baselines — RL-based
-    ('IQL',         make_iql_agent),
-    ('BC',          make_bc_agent),
-    ('BCQ',         make_bcq_agent),
-    ('TD3_BC',      make_td3bc_agent),
-    ('CQL',         make_cql_agent),
-    ('MBRL_MOPO',   make_mbrl_mopo_agent),
-    ('MBRL_Combo',  make_mbrl_combo_agent),
-    # Project baselines — classical
-    ('OnlineLP',    make_onlinelp_agent),
-    ('PID',         make_pid_agent),
-    ('Abid',        make_abid_agent),
+   ('DGAB-FO',     make_dgab_agent),
+   ('IQL',         make_iql_agent)
 ]
-
 
 # ═══════════════════════════════════════════════
 # Single-episode runner
@@ -278,6 +283,14 @@ def run_one_episode(controller, envs, pv_generator, tracker,
         impression_info = np.stack((is_exposed_pit, conversion_action_pit), axis=-1)
         history_impression_results.append(impression_info)
 
+        # ── Per-tick score ──
+        logger.info(f'  [tick={tick_index:02d}] '
+                    f'budget_left={agents[player_index].remaining_budget:.0f} '
+                    f'tick_cost={cost[player_index]:.1f} '
+                    f'tick_conv={int(reward[player_index])} '
+                    f'cum_reward={int(rewards[player_index])} '
+                    f'cum_cost={costs[player_index]:.1f}')
+
         if generate_log:
             tracker.train_logging(
                 episode, tick_index, pv_values, budgets, agents_cpa, agents_category,
@@ -342,74 +355,76 @@ def main():
     dummy_agent = PidBiddingStrategy(exp_tempral_ratio=np.ones(48))
     dummy_agent.name += "0"
 
-    player_index = 0
-
     all_results = {name: [] for name, _ in ALL_AGENTS}
     tracker = BiddingTracker("comparison_tracker")
+    num_players = 48
 
     for ep in range(NUM_EPISODE):
-        logger.info(f'\n{"="*60}')
-        logger.info(f'Episode {ep}')
-        logger.info(f'{"="*60}')
+        for player_index in range(num_players):
+            logger.info(f'\n{"="*60}')
+            logger.info(f'Episode {ep}  Player #{player_index}')
+            logger.info(f'{"="*60}')
 
-        for agent_name, agent_factory in ALL_AGENTS:
-            # Fresh controller each run (same episode index → same PVs)
-            controller = Controller(
-                player_index=player_index,
-                player_agent=dummy_agent,
-            )
-            envs = controller.biddingEnv
-            pv_generator = controller.pvGenerator
+            for agent_name, agent_factory in ALL_AGENTS:
+                # Fresh controller each run → same PVs per player
+                controller = Controller(
+                    player_index=player_index,
+                    player_agent=dummy_agent,
+                )
+                envs = controller.biddingEnv
+                pv_generator = controller.pvGenerator
 
-            # Replace player with our agent
-            player_agent = agent_factory(
-                budget=controller.budget_list[player_index],
-                cpa=controller.cpa_constraint_list[player_index],
-                category=controller.category[player_index],
-            )
-            controller.player_agent = player_agent
-            # Re-load agents so the player is wrapped correctly
-            controller.agents = controller.load_agents()
+                # Replace player with our agent
+                player_agent = agent_factory(
+                    budget=controller.budget_list[player_index],
+                    cpa=controller.cpa_constraint_list[player_index],
+                    category=controller.category[player_index],
+                )
+                controller.player_agent = player_agent
+                controller.agents = controller.load_agents()
 
-            logger.info(f'  Running {agent_name} ... (budget={player_agent.budget}, '
-                        f'cpa={player_agent.cpa})')
-            t0 = time.time()
-            result = run_one_episode(
-                controller, envs, pv_generator, tracker,
-                episode=ep, player_index=player_index,
-            )
-            elapsed = time.time() - t0
-            logger.info(f'  {agent_name} done in {elapsed:.1f}s')
-            logger.info(f'    score={result["score"]:.2f}  reward={result["reward"]}  '
-                        f'cpa_real={result["cpa_real"]:.4f}  '
-                        f'budget_used={result["budget_used"]:.1%}')
-            all_results[agent_name].append(result)
+                logger.info(f'  [{agent_name}] budget={player_agent.budget:.0f} '
+                            f'cpa={player_agent.cpa:.0f}')
+                t0 = time.time()
+                result = run_one_episode(
+                    controller, envs, pv_generator, tracker,
+                    episode=ep, player_index=player_index,
+                )
+                elapsed = time.time() - t0
+                logger.info(f'  [{agent_name}] done {elapsed:.1f}s '
+                            f'score={result["score"]:.2f} reward={result["reward"]} '
+                            f'cpa={result["cpa_real"]:.2f} budget={result["budget_used"]:.0%}')
+                all_results[agent_name].append(result)
 
-    # ── Summary ──
+    # ── Summary (average over all 48 advertiser slots) ──
     agents_order = [name for name, _ in ALL_AGENTS]
     col_w = 15
-    sep_w = 85 + (len(agents_order) - 3) * col_w
-    print(f'\n{"="*sep_w}')
-    print('COMPARISON SUMMARY')
-    print(f'{"="*sep_w}')
+    print(f'\n{"="*100}')
+    print(f'OVERALL COMPARISON — avg over {len(all_results[agents_order[0]])} runs (48 advertisers × {NUM_EPISODE} eps)')
+    print(f'{"="*100}')
     header = f'{"Metric":<25}' + ''.join(f'{name:>{col_w}}' for name in agents_order)
     print(header)
     print('-' * len(header))
 
     for metric, key, fmt in [
         ('Score', 'score', '.2f'),
-        ('Reward (conversions)', 'reward', 'd'),
-        ('Cost', 'cost', '.2f'),
-        ('CPA real', 'cpa_real', '.4f'),
-        ('CPA target', 'cpa_target', '.2f'),
+        ('Reward', 'reward', '.0f'),
+        ('Cost', 'cost', '.0f'),
+        ('CPA real', 'cpa_real', '.2f'),
+        ('CPA target', 'cpa_target', '.0f'),
         ('Budget used %', 'budget_used', '.1%'),
     ]:
         row = f'{metric:<25}'
+        avg_vals = []
         for name in agents_order:
             v = np.mean([r[key] for r in all_results[name]])
-            if fmt == 'd':
-                v = int(v)
+            avg_vals.append(v)
             row += f'{v:>{col_w}{fmt}}'
+        # Determine best
+        if key == 'score':
+            best = agents_order[np.argmax(avg_vals)]
+        elif key == 'cpa_real':
+            best = agents_order[np.argmin(avg_vals)]
         print(row)
 
     print()

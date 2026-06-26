@@ -17,20 +17,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_bc():
+def run_bc(train_data_path=None, step_num=None, save_dir=None):
     """
     Run bc model training and evaluation.
     """
-    train_model()
+    kwargs = {}
+    if train_data_path: kwargs['train_data_path'] = train_data_path
+    if step_num: kwargs['step_num'] = step_num
+    if save_dir: kwargs['save_dir'] = save_dir
+    train_bc_model(**kwargs)
     # load_model()
 
 
-def train_model():
+def train_bc_model(train_data_path="./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv",
+                     step_num=20000, save_dir="saved_model/BCtest"):
     """
     train BC model
     """
 
-    train_data_path = "./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv"
     training_data = pd.read_csv(train_data_path)
 
     def safe_literal_eval(val):
@@ -52,7 +56,7 @@ def train_model():
 
     normalize_dic = normalize_state(training_data, state_dim, normalize_indices)
     normalize_reward(training_data, "reward_continuous")
-    save_normalize_dict(normalize_dic, "saved_model/BCtest")
+    save_normalize_dict(normalize_dic, save_dir)
 
     replay_buffer = ReplayBuffer()
     add_to_replay_buffer(replay_buffer, training_data, is_normalize)
@@ -61,15 +65,14 @@ def train_model():
     logger.info(f"Replay buffer size: {len(replay_buffer.memory)}")
 
     model = BC(dim_obs=state_dim)
-    step_num = 20000
     batch_size = 100
     for i in range(step_num):
         states, actions, _, _, _ = replay_buffer.sample(batch_size)
         a_loss = model.step(states, actions)
         logger.info(f"Step: {i} Action loss: {np.mean(a_loss)}")
 
-    # model.save_net("saved_model/BCtest")
-    model.save_jit("saved_model/BCtest")
+    # model.save_net(save_dir)
+    model.save_jit(save_dir)
     test_trained_model(model, replay_buffer)
 
 

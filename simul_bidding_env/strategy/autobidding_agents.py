@@ -248,10 +248,9 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
         model.load_state_dict(torch.load(ckpt, map_location=device))
         model.to(device)
         model.eval()
-
         self._rollout = DGABRollout(
             model,
-            V_goal=budget / (cpa + EPS),
+            V_goal=budget / (cpa + EPS) * 0.5,
             C_target=cpa,
             K=model_param.get('K', 20),
             scale=model_param.get('scale', 2000),
@@ -278,7 +277,7 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
         self._volumes = []
         self._rollout.__init__(
             self._rollout.model,
-            V_goal=self._budget / (self._cpa + EPS),
+            V_goal=self._budget / (self._cpa + EPS) ,
             C_target=self._cpa,
             K=self._rollout.K,
             scale=self._rollout.scale,
@@ -347,11 +346,17 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
         state_norm = (state_raw - self._state_mean) / self._state_std
 
         # Update RTG from previous tick
+        v_prev, c_prev = 0.0, 0.0
         if historyImpressionResult:
             last_imp = np.asarray(historyImpressionResult[-1], dtype=np.float32)
             v_prev = float(last_imp[:, 1].sum())  # conversionAction
             last_auc = np.asarray(historyAuctionResult[-1], dtype=np.float32)
-            c_prev = float(last_auc[:, 2].sum())  # cost
+            # cost_pit * is_exposed_pit = 实际扣费 (只有曝光的广告位才真正扣钱)
+            c_prev = float((last_auc[:, 2] * last_imp[:, 0]).sum())
+            if v_prev == 0.0 and c_prev > 0:
+                expected_v_loss = c_prev / (self.cpa + EPS)
+                # 扣减一半的期望转化，平滑过渡，防止网络崩溃
+                v_prev = expected_v_loss * 0.5
             self._rollout.update_rtg(v_prev, c_prev)
 
         # Get alpha from model

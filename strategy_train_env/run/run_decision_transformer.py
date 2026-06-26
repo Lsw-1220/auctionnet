@@ -14,22 +14,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_dt():
-    train_model()
+def run_dt(train_data_path=None, step_num=None, save_dir=None):
+    kwargs = {}
+    if train_data_path: kwargs['train_data_path'] = train_data_path
+    if step_num: kwargs['step_num'] = step_num
+    if save_dir: kwargs['save_dir'] = save_dir
+    train_dt_model(**kwargs)
 
 
-def train_model():
+def train_dt_model(train_data_path="./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv",
+                  step_num=10000, save_dir="saved_model/DTtest"):
     state_dim = 16
 
     # replay_buffer = EpisodeReplayBuffer(16, 1, "./data/trajectory/trajectory_data.csv")
-    replay_buffer = EpisodeReplayBuffer(16, 1, "./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv")
+    replay_buffer = EpisodeReplayBuffer(16, 1, train_data_path)
     save_normalize_dict({"state_mean": replay_buffer.state_mean, "state_std": replay_buffer.state_std},
-                        "saved_model/DTtest")
+                        save_dir)
     logger.info(f"Replay buffer size: {len(replay_buffer.trajectories)}")
 
     model = DecisionTransformer(state_dim=state_dim, act_dim=1, state_mean=replay_buffer.state_mean,
                                 state_std=replay_buffer.state_std)
-    step_num = 10000
     batch_size = 32
     sampler = WeightedRandomSampler(replay_buffer.p_sample, num_samples=step_num * batch_size, replacement=True)
     dataloader = DataLoader(replay_buffer, sampler=sampler, batch_size=batch_size)
@@ -42,7 +46,7 @@ def train_model():
         logger.info(f"Step: {i} Action loss: {np.mean(train_loss)}")
         model.scheduler.step()
 
-    model.save_net("saved_model/DTtest")
+    model.save_net(save_dir)
     test_state = np.ones(state_dim, dtype=np.float32)
     logger.info(f"Test action: {model.take_actions(test_state)}")
 

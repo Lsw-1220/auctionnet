@@ -15,8 +15,8 @@ class IqlBiddingStrategy(BaseBiddingStrategy):
 
         file_name = os.path.dirname(os.path.realpath(__file__))
         dir_name = file_name
-        model_path = os.path.join(dir_name, "official_agent", "IQLtest", "iql_model.pth")
-        dict_path = os.path.join(dir_name, "official_agent", "IQLtest", "normalize_dict.pkl")
+        model_path = os.path.join(dir_name, "official_agent", "IQL", "iql_model.pth")
+        dict_path = os.path.join(dir_name, "official_agent", "IQL", "normalize_dict.pkl")
         self.model = torch.jit.load(model_path)
         with open(dict_path, 'rb') as file:
             self.normalize_dict = pickle.load(file)

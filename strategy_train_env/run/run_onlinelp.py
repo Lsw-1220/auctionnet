@@ -11,16 +11,19 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 
-def train_onlineLpModel():
-    onlineLp = OnlineLp("./data/traffic/")
-    onlineLp.train("saved_model/onlineLpTest")
+def train_onlineLpModel(train_data_path="./data/traffic/", save_dir="saved_model/onlineLpTest"):
+    onlineLp = OnlineLp(train_data_path)
+    onlineLp.train(save_dir)
 
 
-def run_onlineLp():
+def run_onlineLp(train_data_path=None, save_dir=None):
     """
     Run onlinelp model training and evaluation.
     """
-    train_onlineLpModel()
+    kwargs = {}
+    if train_data_path: kwargs['train_data_path'] = train_data_path
+    if save_dir: kwargs['save_dir'] = save_dir
+    train_onlineLpModel(**kwargs)
 
 
 if __name__ == '__main__':

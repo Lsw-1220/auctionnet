@@ -17,11 +17,11 @@ logger = logging.getLogger(__name__)
 STATE_DIM = 16
 
 
-def train_bcq_model():
+def train_bcq_model(train_data_path="./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv",
+                     step_num=100, save_dir="saved_model/BCQtest"):
     """
     Train the BCQ model.
     """
-    train_data_path = "./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv"
     training_data = pd.read_csv(train_data_path)
 
     def safe_literal_eval(val):
@@ -42,7 +42,7 @@ def train_bcq_model():
     if is_normalize:
         normalize_dic = normalize_state(training_data, STATE_DIM, normalize_indices=[13, 14, 15])
         training_data['reward'] = normalize_reward(training_data, "reward_continuous")
-        save_normalize_dict(normalize_dic, "saved_model/BCQtest")
+        save_normalize_dict(normalize_dic, save_dir)
 
     # Build replay buffer
     replay_buffer = ReplayBuffer()
@@ -51,11 +51,11 @@ def train_bcq_model():
 
     # Train model
     model = BCQ(state_dim=STATE_DIM)
-    train_model_steps(model, replay_buffer)
+    train_model_steps(model, replay_buffer, step_num=step_num)
 
     # Save model
-    # model.save_net("saved_model/BCQtest")
-    model.save_jit("saved_model/BCQtest")
+    # model.save_net(save_dir)
+    model.save_jit(save_dir)
 
     # Test trained model
     test_trained_model(model, replay_buffer)
@@ -89,12 +89,16 @@ def test_trained_model(model, replay_buffer):
         print("concate:", tem)
 
 
-def run_bcq():
+def run_bcq(train_data_path=None, step_num=None, save_dir=None):
     print(sys.path)
     """
     Run BCQ model training and evaluation.
     """
-    train_bcq_model()
+    kwargs = {}
+    if train_data_path: kwargs['train_data_path'] = train_data_path
+    if step_num: kwargs['step_num'] = step_num
+    if save_dir: kwargs['save_dir'] = save_dir
+    train_bcq_model(**kwargs)
 
 
 if __name__ == '__main__':

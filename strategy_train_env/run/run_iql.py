@@ -15,11 +15,11 @@ logger = logging.getLogger(__name__)
 STATE_DIM = 16
 
 
-def train_iql_model():
+def train_iql_model(train_data_path="./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv",
+                     step_num=20000, save_dir="saved_model/IQLtest"):
     """
     Train the IQL model.
     """
-    train_data_path = "./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv"
     training_data = pd.read_csv(train_data_path)
 
     def safe_literal_eval(val):
@@ -41,7 +41,7 @@ def train_iql_model():
         training_data['reward'] = normalize_reward(training_data, "reward_continuous")
         # select use sparse reward
         # training_data['reward'] = normalize_reward(training_data, "reward")
-        save_normalize_dict(normalize_dic, "saved_model/IQLtest")
+        save_normalize_dict(normalize_dic, save_dir)
 
     # Build replay buffer
     replay_buffer = ReplayBuffer()
@@ -50,10 +50,10 @@ def train_iql_model():
 
     # Train model
     model = IQL(dim_obs=STATE_DIM)
-    train_model_steps(model, replay_buffer)
+    train_model_steps(model, replay_buffer, step_num=step_num)
 
     # Save model
-    model.save_jit("saved_model/IQLtest")
+    model.save_jit(save_dir)
 
     # Test trained model
     test_trained_model(model, replay_buffer)
@@ -86,12 +86,12 @@ def test_trained_model(model, replay_buffer):
     print("action VS pred action:", tem)
 
 
-def run_iql():
-    print(sys.path)
-    """
-    Run IQL model training and evaluation.
-    """
-    train_iql_model()
+def run_iql(train_data_path=None, step_num=None, save_dir=None):
+    kwargs = {}
+    if train_data_path: kwargs['train_data_path'] = train_data_path
+    if step_num: kwargs['step_num'] = step_num
+    if save_dir: kwargs['save_dir'] = save_dir
+    train_iql_model(**kwargs)
 
 
 if __name__ == '__main__':
