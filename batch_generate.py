@@ -145,7 +145,7 @@ def run_single_period(period_index, pv_num, generator_type, output_dir, budget_p
     tracker = BiddingTracker("batch_tracker")
 
     logger.info(f"Period {period_index:05d}: world={world_type}, gen={gen_type}, "
-                f"pv_num={pv_generator.pv_num}, "
+                f"pv_num={pv_generator.PV_NUM}, "
                 f"min_budget={budgets.min():.0f}, max_budget={budgets.max():.0f}")
 
     # ── Run simulation ──────────────────────────────────────────
