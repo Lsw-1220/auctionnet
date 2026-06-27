@@ -25,3 +25,5 @@ __pycache__/
 
 # User checkpoints
 /saved_model/
+*.sh
+/log/
