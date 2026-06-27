@@ -15,7 +15,10 @@ Usage in Controller (modify agent_list):
     )
 """
 import os, sys
+import logging
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # Add autobidding project to path (adjust if needed)
 _autobidding_root = os.path.normpath(
@@ -222,6 +225,16 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
         self._state_mean = np.asarray(nd['state_mean'], dtype=np.float32)
         self._state_std  = np.asarray(nd['state_std'],  dtype=np.float32)
 
+        # RTG normalization stats (from training data)
+        rtg_v_mean = float(nd.get('rtg_v_mean', 0.0))
+        rtg_v_std  = float(nd.get('rtg_v_std', 1.0))
+        rtg_c_mean = float(nd.get('rtg_c_mean', 0.0))
+        rtg_c_std  = float(nd.get('rtg_c_std', 1.0))
+        self._rtg_v_mean = rtg_v_mean
+        self._rtg_v_std  = rtg_v_std
+        self._rtg_c_mean = rtg_c_mean
+        self._rtg_c_std  = rtg_c_std
+
         block_config = model_param['block_config']
         critic_type = nd.get('critic_type', model_param.get('critic_type', 'mlp'))
         actor_type  = nd.get('actor_type',  model_param.get('actor_type', 'stack'))
@@ -250,10 +263,14 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
         model.eval()
         self._rollout = DGABRollout(
             model,
-            V_goal=budget / (cpa + EPS) * 0.5,
+            V_goal=budget / (cpa + EPS),
             C_target=cpa,
             K=model_param.get('K', 20),
             scale=model_param.get('scale', 2000),
+            rtg_v_mean=rtg_v_mean,
+            rtg_v_std=rtg_v_std,
+            rtg_c_mean=rtg_c_mean,
+            rtg_c_std=rtg_c_std,
         )
         self._device = device
         self._budget = budget
@@ -277,10 +294,14 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
         self._volumes = []
         self._rollout.__init__(
             self._rollout.model,
-            V_goal=self._budget / (self._cpa + EPS) ,
+            V_goal=self._budget / (self._cpa + EPS),
             C_target=self._cpa,
             K=self._rollout.K,
             scale=self._rollout.scale,
+            rtg_v_mean=self._rtg_v_mean,
+            rtg_v_std=self._rtg_v_std,
+            rtg_c_mean=self._rtg_c_mean,
+            rtg_c_std=self._rtg_c_std,
         )
 
     @staticmethod
@@ -357,6 +378,22 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
                 expected_v_loss = c_prev / (self.cpa + EPS)
                 # 扣减一半的期望转化，平滑过渡，防止网络崩溃
                 v_prev = expected_v_loss * 0.5
+
+            # ── RTG debug logging ──
+            rtg_before = self._rollout.rtg.cpu().numpy()
+            dv_norm = v_prev / self._rtg_v_std
+            dc_norm = c_prev / self._rtg_c_std
+
+            self._rollout.update_rtg(v_prev, c_prev)
+
+            rtg_after = self._rollout.rtg.cpu().numpy()
+
+            logger.info(
+                f'[DGAB RTG tick={timeStepIndex:02d}] '
+                f'v_norm={dv_norm:.4f} c_norm={dc_norm:.4f} | '
+                f'rtg_before=[{rtg_before[0]:.4f}, {rtg_before[1]:.4f}] '
+                f'rtg_after=[{rtg_after[0]:.4f}, {rtg_after[1]:.4f}]')
+        else:
             self._rollout.update_rtg(v_prev, c_prev)
 
         # Get alpha from model
@@ -366,5 +403,101 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
         self._update_state(historyBid, historyLeastWinningCost,
                           historyAuctionResult, historyImpressionResult,
                           historyPValueInfo)
+
+        return alpha * np.asarray(pValues, dtype=np.float64)
+
+
+# ──────────────────────────────────────────────
+# Decision Transformer Agent
+# ──────────────────────────────────────────────
+
+class DTAuctionNetAgent(AuctionNetBase):
+    """
+    Decision Transformer agent for AuctionNet online testing.
+
+    model_param keys:
+        save_dir:          path to model directory (contains dt.pt + normalize_dict.pkl)
+        device:            str (default 'cpu')
+        target_return:     float (default 4.0)
+        scale:             float (default 2000)
+        K:                 int (default 10)
+        max_ep_len:        int (default 96)
+    """
+
+    def __init__(self, budget=100, name="DT-AuctionNet", cpa=2, category=1,
+                 model_param=None):
+        super().__init__(budget=budget, name=name, cpa=cpa, category=category)
+        if model_param is None:
+            model_param = {}
+
+        device = model_param.get('device', 'cpu')
+
+        import torch
+        import pickle
+        import importlib.util
+        # DT lives in AuctionNet's strategy_train_env, not autobidding.
+        # Load by absolute path to avoid sys.path shadowing from autobidding root.
+        _auctionnet_root = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), '..', '..'))
+        _dt_path = os.path.join(_auctionnet_root, 'strategy_train_env',
+                                'bidding_train_env', 'baseline', 'dt', 'dt.py')
+        _spec = importlib.util.spec_from_file_location('_dt_module', _dt_path)
+        _dt_module = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_dt_module)
+        DecisionTransformer = _dt_module.DecisionTransformer
+
+        pkl_path = os.path.join(model_param['save_dir'], 'normalize_dict.pkl')
+        with open(pkl_path, 'rb') as f:
+            nd = pickle.load(f)
+        state_mean = np.asarray(nd['state_mean'], dtype=np.float32)
+        state_std  = np.asarray(nd['state_std'],  dtype=np.float32)
+
+        self._dt_model = DecisionTransformer(
+            state_dim=16, act_dim=1,
+            state_mean=state_mean,
+            state_std=state_std,
+            action_tanh=False,
+            K=model_param.get('K', 10),
+            max_ep_len=model_param.get('max_ep_len', 96),
+            scale=model_param.get('scale', 2000),
+            target_return=model_param.get('target_return', 4),
+        )
+        ckpt = os.path.join(model_param['save_dir'],
+                            model_param.get('ckpt_name', 'dt.pt'))
+        self._dt_model.load_net(ckpt)
+        self._dt_model.to(device)
+        self._dt_model.device = device
+
+        self._device = device
+        self._target_return = model_param.get('target_return', 4)
+
+    def reset(self):
+        self.remaining_budget = self.budget
+        self._dt_model.init_eval()
+
+    def bidding(self, timeStepIndex, pValues, pValueSigmas,
+                historyPValueInfo, historyBid,
+                historyAuctionResult, historyImpressionResult,
+                historyLeastWinningCost):
+        if timeStepIndex == 0:
+            self._dt_model.init_eval()
+
+        state = _build_state_16(
+            timeStepIndex, self.remaining_budget, self.budget,
+            pValues, historyBid, historyAuctionResult,
+            historyImpressionResult, historyLeastWinningCost,
+            historyPValueInfo)
+
+        pre_reward = None
+        if historyImpressionResult:
+            last = np.asarray(historyImpressionResult[-1], dtype=np.float32)
+            pre_reward = float(last[:, 1].sum())
+
+        alpha = float(np.asarray(
+            self._dt_model.take_actions(
+                state,
+                target_return=self._target_return,
+                pre_reward=pre_reward)
+        ).reshape(-1)[0])
 
         return alpha * np.asarray(pValues, dtype=np.float64)

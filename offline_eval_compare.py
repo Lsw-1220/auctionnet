@@ -10,8 +10,24 @@ Usage:
     python offline_eval_compare.py --data ./data/log/0.csv --advertisers 0,4,24
 """
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'strategy_train_env'))
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _PROJECT_ROOT)
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, 'strategy_train_env'))
+
+# Import from strategy_train_env BEFORE autobidding path is added
+# (both projects have bidding_train_env/ with different submodules)
+from bidding_train_env.offline_eval.test_dataloader import TestDataLoader
+from bidding_train_env.offline_eval.offline_env import OfflineEnv
+
+# Now add autobidding path for GAVE/DGAB imports
+# Must clear cached bidding_train_env so it reloads from autobidding
+_AUTOBIDDING_ROOT = os.path.normpath(os.path.join(_PROJECT_ROOT, '..', 'autobidding'))
+if os.path.isdir(_AUTOBIDDING_ROOT):
+    sys.path.insert(0, _AUTOBIDDING_ROOT)
+    # Invalidate cached imports that were loaded from strategy_train_env
+    for _mod in list(sys.modules):
+        if _mod.startswith('bidding_train_env'):
+            del sys.modules[_mod]
 
 import numpy as np
 import logging
@@ -34,9 +50,6 @@ def getScore_neurips(reward, cpa, cpa_constraint):
 
 def run_offline_eval(agent, data_path, advertiser_key):
     """Run offline evaluation for one advertiser with the given agent."""
-    from bidding_train_env.offline_eval.test_dataloader import TestDataLoader
-    from bidding_train_env.offline_eval.offline_env import OfflineEnv
-
     data_loader = TestDataLoader(file_path=data_path)
     env = OfflineEnv()
 
@@ -164,14 +177,13 @@ def build_agent(name, budget, cpa, category):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', type=str,
-                        default='./strategy_train_env/data/traffic/period-8.csv')
+                        default='./strategy_train_env/period-8.csv')
     parser.add_argument('--advertisers', type=str, default='all',
                         help='Comma-separated advertiser indices, or "all"')
     parser.add_argument('--agents', type=str, default='PID,IQL,GAVE,DGAB',
                         help='Comma-separated agent names')
     args = parser.parse_args()
 
-    from bidding_train_env.offline_eval.test_dataloader import TestDataLoader
     loader = TestDataLoader(file_path=args.data)
     all_keys = loader.keys
     logger.info(f'Data: {args.data} — {len(all_keys)} (period, advertiser) pairs')

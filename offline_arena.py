@@ -33,7 +33,7 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(me
 logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────
-CSV_PATH = 'strategy_train_env/data/traffic/period-12.csv'
+CSV_PATH = 'strategy_train_env/period-8.csv'
 PLAYER_INDEX = 0  # which agent slot gets DGAB
 # ────────────────────────────────────────────────────────────────
 

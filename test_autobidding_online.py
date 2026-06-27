@@ -49,7 +49,7 @@ from simul_bidding_env.Controller.Controller import Controller
 
 # ── Our agents ──
 from simul_bidding_env.strategy.autobidding_agents import (
-    GAVEAuctionNetAgent, DGABFOAuctionNetAgent,
+    GAVEAuctionNetAgent, DGABFOAuctionNetAgent, DTAuctionNetAgent,
 )
 
 # ═══════════════════════════════════════════════
@@ -63,7 +63,8 @@ BLOCK_CONFIG = {
 }
 
 GAVE_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/gave_400k_rc'
-DGAB_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_400k_rc'  # <-- UPDATE THIS
+DGAB_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_400k_sparse'  # <-- UPDATE THIS
+DT_SAVE_DIR = './saved_model/DTtest'
 
 DEVICE = 'cuda:0' if __import__('torch').cuda.is_available() else 'cpu'
 NUM_EPISODE = 1          # number of episodes to run per agent
@@ -100,6 +101,20 @@ def make_dgab_agent(budget, cpa, category):
             device=DEVICE,
             actor_type='stack',          # or 'cross_attn'
             critic_type='sequence',
+        ),
+    )
+
+
+def make_dt_agent(budget, cpa, category):
+    """Decision Transformer."""
+    return DTAuctionNetAgent(
+        budget=budget, cpa=cpa, category=category,
+        name='DT-Player',
+        model_param=dict(
+            save_dir=DT_SAVE_DIR,
+            device=DEVICE,
+            target_return=4,
+            scale=2000,
         ),
     )
 
@@ -190,9 +205,8 @@ def make_onlinelp_agent(budget, cpa, category):
 # ]
 ALL_AGENTS = [
     # User's custom strategies
-    ('GAVE',        make_gave_agent),
-   ('DGAB-FO',     make_dgab_agent),
-   ('IQL',         make_iql_agent)
+  
+     ('DT',        make_dt_agent)
 ]
 
 # ═══════════════════════════════════════════════
@@ -283,13 +297,17 @@ def run_one_episode(controller, envs, pv_generator, tracker,
         impression_info = np.stack((is_exposed_pit, conversion_action_pit), axis=-1)
         history_impression_results.append(impression_info)
 
-        # ── Per-tick score ──
+        # ── Per-tick score + alpha ──
+        pv_mean = np.mean(pv_values[:, player_index])
+        bid_mean = np.mean(bids[:, player_index])
+        alpha_est = bid_mean / (pv_mean + 1e-8) if pv_mean > 0 else 0.0
         logger.info(f'  [tick={tick_index:02d}] '
                     f'budget_left={agents[player_index].remaining_budget:.0f} '
                     f'tick_cost={cost[player_index]:.1f} '
                     f'tick_conv={int(reward[player_index])} '
                     f'cum_reward={int(rewards[player_index])} '
-                    f'cum_cost={costs[player_index]:.1f}')
+                    f'cum_cost={costs[player_index]:.1f} '
+                    f'alpha≈{alpha_est:.1f}')
 
         if generate_log:
             tracker.train_logging(
@@ -357,10 +375,11 @@ def main():
 
     all_results = {name: [] for name, _ in ALL_AGENTS}
     tracker = BiddingTracker("comparison_tracker")
-    num_players = 48
+    # Only test first advertiser (advertiser #0)
+    test_player_indices = [0]
 
     for ep in range(NUM_EPISODE):
-        for player_index in range(num_players):
+        for player_index in test_player_indices:
             logger.info(f'\n{"="*60}')
             logger.info(f'Episode {ep}  Player #{player_index}')
             logger.info(f'{"="*60}')
@@ -400,7 +419,7 @@ def main():
     agents_order = [name for name, _ in ALL_AGENTS]
     col_w = 15
     print(f'\n{"="*100}')
-    print(f'OVERALL COMPARISON — avg over {len(all_results[agents_order[0]])} runs (48 advertisers × {NUM_EPISODE} eps)')
+    print(f'OVERALL COMPARISON — avg over {len(all_results[agents_order[0]])} runs (advertiser #{test_player_indices[0]} × {NUM_EPISODE} eps)')
     print(f'{"="*100}')
     header = f'{"Metric":<25}' + ''.join(f'{name:>{col_w}}' for name in agents_order)
     print(header)

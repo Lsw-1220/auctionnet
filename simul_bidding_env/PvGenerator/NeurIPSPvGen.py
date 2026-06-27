@@ -32,7 +32,7 @@ class NeurIPSPvGen:
         self.traffic_num_ratio_scale = 0.4
         self.traffic_num_ratio_window = 4
 
-        self.pvalue_mean_base = 0.0005
+        self.pvalue_mean_base = 0.001
         self.pvalue_mean_by_diff_category_ratio_scale = 0.7
         self.pvalue_mean_by_diff_category_ratio_window = 8
         self.pvalue_mean_by_same_category_ratio_scale = 0.5

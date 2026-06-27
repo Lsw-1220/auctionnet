@@ -37,6 +37,11 @@ def run_test():
 
     for key in keys:
         period, advertiser = int(key[0]), int(key[1])
+        # Set budget/CPA from data for each advertiser
+        adv_data = test_dict[key]
+        agent.budget = adv_data['budget'].iloc[0]
+        agent.cpa = adv_data['CPAConstraint'].iloc[0]
+        agent.category = int(adv_data['advertiserCategoryIndex'].iloc[0])
         agent.reset()
         num_timeStepIndex, pValues, pValueSigmas, leastWinningCosts = data_loader.mock_data(key)
         rewards = np.zeros(num_timeStepIndex)
