@@ -62,13 +62,27 @@ BLOCK_CONFIG = {
     'resid_pdrop': 0.1, 'attn_pdrop': 0.1,
 }
 
-GAVE_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/gave_400k_rc'
-DGAB_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_400k_sparse'  # <-- UPDATE THIS
+GAVE_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/gave_20k_dense'
+DGAB_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_v3_20260701062347'
 DT_SAVE_DIR = './saved_model/DTtest'
 
 DEVICE = 'cuda:0' if __import__('torch').cuda.is_available() else 'cpu'
 NUM_EPISODE = 1          # number of episodes to run per agent
 FIXED_SEED = 42          # fixed seed for reproducibility
+RTG_V_CAP = 10           # cap V_goal to control bidding aggressiveness (None=uncapped)
+
+# Pvalue sweep for attention comparison
+# Usage:  python test_autobidding_online.py              -> default sweep
+#         python test_autobidding_online.py 0.0005       -> single PV quick test
+import argparse as _argparse
+_ap = _argparse.ArgumentParser()
+_ap.add_argument('pv', nargs='*', type=float, default=None,
+                 help='PV value(s) to test, e.g. 0.0005')
+_ap.add_argument('--no-attention', action='store_true', help='Disable attention capture')
+_cli_args, _ = _ap.parse_known_args()
+
+PVALUE_SWEEP = _cli_args.pv if _cli_args.pv else [0.0005, 0.001, 0.005]
+CAPTURE_ATTENTION = not _cli_args.no_attention
 
 
 # ═══════════════════════════════════════════════
@@ -90,18 +104,31 @@ def make_gave_agent(budget, cpa, category):
     )
 
 
-def make_dgab_agent(budget, cpa, category):
+def make_dgab_agent(budget, cpa, category, pvalue_mean_base=None):
+    """Create DGAB agent with sparse-PV improvements.
+
+    When pvalue_mean_base is provided, V_goal is auto-capped to match
+    achievable conversions.  log1p normalization and sparse_v_credit are
+    now automatically read from the model's normalize_dict.pkl (no
+    manual flags needed).
+    """
+    mp = dict(
+        save_dir=DGAB_SAVE_DIR,
+        hidden_size=512, max_ep_len=96, time_dim=8,
+        block_config=BLOCK_CONFIG,
+        device=DEVICE,
+        actor_type='stack',          # or 'cross_attn'
+        critic_type='sequence',
+        critic_alpha=1.0,           # pure open-loop (matches reference strategy)
+        capture_attention=CAPTURE_ATTENTION,
+        rtg_v_cap=RTG_V_CAP,       # cap V_goal to control bidding aggressiveness
+    )
+    if pvalue_mean_base is not None:
+        mp['pvalue_mean_base'] = pvalue_mean_base   # auto-cap V_goal
     return DGABFOAuctionNetAgent(
         budget=budget, cpa=cpa, category=category,
         name='DGAB-FO-Player',
-        model_param=dict(
-            save_dir=DGAB_SAVE_DIR,
-            hidden_size=512, max_ep_len=96, time_dim=8,
-            block_config=BLOCK_CONFIG,
-            device=DEVICE,
-            actor_type='stack',          # or 'cross_attn'
-            critic_type='sequence',
-        ),
+        model_param=mp,
     )
 
 
@@ -202,11 +229,11 @@ def make_onlinelp_agent(budget, cpa, category):
 #     ('OnlineLP',    make_onlinelp_agent),
 #     ('PID',         make_pid_agent),
 #     ('Abid',        make_abid_agent),
+#('DT',        make_dt_agent)
 # ]
 ALL_AGENTS = [
-    # User's custom strategies
-  
-     ('DT',        make_dt_agent)
+    ('GAVE',        make_gave_agent),
+     ('DGAB-FO',     make_dgab_agent)
 ]
 
 # ═══════════════════════════════════════════════
@@ -214,7 +241,8 @@ ALL_AGENTS = [
 # ═══════════════════════════════════════════════
 
 def run_one_episode(controller, envs, pv_generator, tracker,
-                    episode, player_index, num_tick=48, generate_log=True):
+                    episode, player_index, num_tick=48, generate_log=True,
+                    pvalue_mean_base=None):
     """Run a single episode. Returns (total_reward, total_cost, cpa_real, win_pv_ratio)."""
     agents = controller.agents
     num_agent = len(agents)
@@ -235,6 +263,9 @@ def run_one_episode(controller, envs, pv_generator, tracker,
     history_least_winning_costs = []
 
     controller.reset(episode=episode)
+    if pvalue_mean_base is not None:
+        pv_generator.pvalue_mean_base = pvalue_mean_base
+        pv_generator.pv_values, pv_generator.PValueSigmas = pv_generator.generate()
     total_pv_num = 0
 
     for tick_index in range(num_tick):
@@ -373,81 +404,114 @@ def main():
     dummy_agent = PidBiddingStrategy(exp_tempral_ratio=np.ones(48))
     dummy_agent.name += "0"
 
-    all_results = {name: [] for name, _ in ALL_AGENTS}
-    tracker = BiddingTracker("comparison_tracker")
     # Only test first advertiser (advertiser #0)
     test_player_indices = [0]
 
-    for ep in range(NUM_EPISODE):
-        for player_index in test_player_indices:
-            logger.info(f'\n{"="*60}')
-            logger.info(f'Episode {ep}  Player #{player_index}')
-            logger.info(f'{"="*60}')
+    # Accumulate results across all PV sweeps for CSV export
+    all_results_dict = {}
 
-            for agent_name, agent_factory in ALL_AGENTS:
-                # Fresh controller each run → same PVs per player
-                controller = Controller(
-                    player_index=player_index,
-                    player_agent=dummy_agent,
-                )
-                envs = controller.biddingEnv
-                pv_generator = controller.pvGenerator
+    for pv_val in PVALUE_SWEEP:
+        pv_label = f'{pv_val:.4f}'
+        logger.info(f'\n{"#"*60}')
+        logger.info(f'PVALUE_MEAN_BASE = {pv_label}')
+        logger.info(f'{"#"*60}')
 
-                # Replace player with our agent
-                player_agent = agent_factory(
-                    budget=controller.budget_list[player_index],
-                    cpa=controller.cpa_constraint_list[player_index],
-                    category=controller.category[player_index],
-                )
-                controller.player_agent = player_agent
-                controller.agents = controller.load_agents()
+        all_results = {name: [] for name, _ in ALL_AGENTS}
+        all_results_dict[pv_label] = all_results
+        tracker = BiddingTracker("comparison_tracker")
 
-                logger.info(f'  [{agent_name}] budget={player_agent.budget:.0f} '
-                            f'cpa={player_agent.cpa:.0f}')
-                t0 = time.time()
-                result = run_one_episode(
-                    controller, envs, pv_generator, tracker,
-                    episode=ep, player_index=player_index,
-                )
-                elapsed = time.time() - t0
-                logger.info(f'  [{agent_name}] done {elapsed:.1f}s '
-                            f'score={result["score"]:.2f} reward={result["reward"]} '
-                            f'cpa={result["cpa_real"]:.2f} budget={result["budget_used"]:.0%}')
-                all_results[agent_name].append(result)
+        for ep in range(NUM_EPISODE):
+            for player_index in test_player_indices:
+                logger.info(f'\n{"="*60}')
+                logger.info(f'Episode {ep}  Player #{player_index}')
+                logger.info(f'{"="*60}')
 
-    # ── Summary (average over all 48 advertiser slots) ──
-    agents_order = [name for name, _ in ALL_AGENTS]
-    col_w = 15
-    print(f'\n{"="*100}')
-    print(f'OVERALL COMPARISON — avg over {len(all_results[agents_order[0]])} runs (advertiser #{test_player_indices[0]} × {NUM_EPISODE} eps)')
-    print(f'{"="*100}')
-    header = f'{"Metric":<25}' + ''.join(f'{name:>{col_w}}' for name in agents_order)
-    print(header)
-    print('-' * len(header))
+                for agent_name, agent_factory in ALL_AGENTS:
+                    controller = Controller(
+                        player_index=player_index,
+                        player_agent=dummy_agent,
+                    )
+                    envs = controller.biddingEnv
+                    pv_generator = controller.pvGenerator
 
-    for metric, key, fmt in [
-        ('Score', 'score', '.2f'),
-        ('Reward', 'reward', '.0f'),
-        ('Cost', 'cost', '.0f'),
-        ('CPA real', 'cpa_real', '.2f'),
-        ('CPA target', 'cpa_target', '.0f'),
-        ('Budget used %', 'budget_used', '.1%'),
-    ]:
-        row = f'{metric:<25}'
-        avg_vals = []
-        for name in agents_order:
-            v = np.mean([r[key] for r in all_results[name]])
-            avg_vals.append(v)
-            row += f'{v:>{col_w}{fmt}}'
-        # Determine best
-        if key == 'score':
-            best = agents_order[np.argmax(avg_vals)]
-        elif key == 'cpa_real':
-            best = agents_order[np.argmin(avg_vals)]
-        print(row)
+                    try:
+                        player_agent = agent_factory(
+                            budget=controller.budget_list[player_index],
+                            cpa=controller.cpa_constraint_list[player_index],
+                            category=controller.category[player_index],
+                            pvalue_mean_base=pv_val,
+                        )
+                    except TypeError:
+                        # Baseline agents (PID etc.) don't accept pvalue_mean_base
+                        player_agent = agent_factory(
+                            budget=controller.budget_list[player_index],
+                            cpa=controller.cpa_constraint_list[player_index],
+                            category=controller.category[player_index],
+                        )
+                    controller.player_agent = player_agent
+                    agents = controller.load_agents()
+                    for i in range(len(agents)):
+                        agents[i].remaining_budget = controller.budget_list[i]
+
+                    logger.info(f'  [{agent_name}] budget={player_agent.budget:.0f} '
+                                f'cpa={player_agent.cpa:.0f}')
+                    t0 = time.time()
+                    result = run_one_episode(
+                        controller, envs, pv_generator, tracker,
+                        episode=ep, player_index=player_index,
+                        pvalue_mean_base=pv_val,
+                    )
+                    elapsed = time.time() - t0
+                    logger.info(f'  [{agent_name}] done {elapsed:.1f}s '
+                                f'score={result["score"]:.2f} reward={result["reward"]} '
+                                f'cpa={result["cpa_real"]:.2f} budget={result["budget_used"]:.0%}')
+                    all_results[agent_name].append(result)
+
+                    # Save attention per pvalue
+                    if hasattr(player_agent, '_capture_attention') and player_agent._capture_attention:
+                        player_agent.save_attention(f'exp_data/dgab_attention_pv{pv_label}.pt')
+
+        # Summary for this pvalue
+        agents_order = [name for name, _ in ALL_AGENTS]
+        print(f'\n  PVALUE={pv_label}  Score={all_results[agents_order[0]][0]["score"]:.1f}  '
+              f'Reward={all_results[agents_order[0]][0]["reward"]}  '
+              f'CPA={all_results[agents_order[0]][0]["cpa_real"]:.1f}')
+
+    # ── Save results to CSV ──
+    import pandas as pd
+    rows = []
+    for pv_val in PVALUE_SWEEP:
+        pv_label = f'{pv_val:.4f}'
+        for agent_name, _ in ALL_AGENTS:
+            # Collect results across episodes for this pv
+            for ep_result in all_results_dict[pv_label][agent_name]:
+                rows.append({
+                    'pvalue_mean_base': pv_val,
+                    'strategy': agent_name,
+                    'score': ep_result['score'],
+                    'reward': ep_result['reward'],
+                    'cost': ep_result['cost'],
+                    'cpa_real': ep_result['cpa_real'],
+                    'cpa_target': ep_result['cpa_target'],
+                    'budget_used': ep_result['budget_used'],
+                    'win_pv_ratio': ep_result['win_pv_ratio'],
+                })
+    if rows:
+        df = pd.DataFrame(rows)
+        out_path = os.path.join(_PROJECT_ROOT, 'exp_data', 'dgab_sparse_fix_results.csv')
+        df.to_csv(out_path, index=False)
+        logger.info(f'Results saved to {out_path}')
+
+        # Also save a compact comparison table (avg score per pv per strategy)
+        pivot = df.groupby(['pvalue_mean_base', 'strategy'])['score'].mean().unstack('strategy')
+        comp_path = os.path.join(_PROJECT_ROOT, 'exp_data', 'dgab_sparse_fix_comparison.csv')
+        pivot.to_csv(comp_path)
+        logger.info(f'Comparison table saved to {comp_path}')
+        print('\n=== Score Comparison ===')
+        print(pivot.to_string())
 
     print()
-    logger.info('Done.')
+    logger.info('Done. Attention files saved to exp_data/dgab_attention_pv*.pt')
 
 
 if __name__ == '__main__':

@@ -196,19 +196,35 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
     Uses StateBuilder16 pattern — state = 16-dim fully observable.
 
     model_param keys:
-        save_dir:     path to model directory
-        hidden_size:  int (default 512)
-        max_ep_len:   int (default 96)
-        time_dim:     int (default 8)
-        block_config: dict
-        device:       str (default 'cpu')
-        actor_type:   'stack' | 'cross_attn' (default 'stack')
-        critic_type:  'sequence' | 'mlp' (default 'mlp')
-        K:            int (default 20)
+        save_dir:        path to model directory
+        hidden_size:     int (default 512)
+        max_ep_len:      int (default 96)
+        time_dim:        int (default 8)
+        block_config:    dict
+        device:          str (default 'cpu')
+        actor_type:      'stack' | 'cross_attn' (default 'stack')
+        critic_type:     'sequence' | 'mlp' (default 'mlp')
+        K:               int (default 20)
+        critic_alpha:    float (default 1.0)
+            1.0 = pure open-loop (original), 0.0 = pure Critic guidance
+        rtg_v_cap:       float (default None)
+            Cap V_goal to this value.  When None, uses budget/cpa (the
+            original formula).  Set to a small number (e.g. 10.0) in
+            sparse-PV environments so the RTG signal is realistic.
+        pvalue_mean_base: float (default None)
+            When provided, used to auto-cap V_goal proportionally to
+            the PV density:  V_goal = min(budget/cpa, budget/cpa * sqrt(ratio))
+
+    The following are read automatically from normalize_dict.pkl and
+    do NOT need to be passed via model_param:
+        rtg_scale:       RTG fixed divisor (replaces z-score normalization)
+        log1p_sparse_dims / sparse_dims / log1p_scale:
+                         log1p transform on PV/Conv dims before z-score
+        sparse_v_credit: pseudo-V factor for zero-conversion steps
     """
 
     def __init__(self, budget=100, name="DGAB-FO-AuctionNet", cpa=2, category=1,
-                 model_param=None):
+                 model_param=None) :
         super().__init__(budget=budget, name=name, cpa=cpa, category=category)
         if model_param is None:
             model_param = {}
@@ -225,15 +241,18 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
         self._state_mean = np.asarray(nd['state_mean'], dtype=np.float32)
         self._state_std  = np.asarray(nd['state_std'],  dtype=np.float32)
 
-        # RTG normalization stats (from training data)
-        rtg_v_mean = float(nd.get('rtg_v_mean', 0.0))
-        rtg_v_std  = float(nd.get('rtg_v_std', 1.0))
-        rtg_c_mean = float(nd.get('rtg_c_mean', 0.0))
-        rtg_c_std  = float(nd.get('rtg_c_std', 1.0))
-        self._rtg_v_mean = rtg_v_mean
-        self._rtg_v_std  = rtg_v_std
-        self._rtg_c_mean = rtg_c_mean
-        self._rtg_c_std  = rtg_c_std
+        # ── Sparse state log1p transform (must match training preprocessing) ──
+        # Training applies log1p(x * log1p_scale) BEFORE computing mean/std,
+        # so saved state_mean/state_std are already in log1p space.
+        self._log1p_sparse_dims = nd.get('log1p_sparse_dims', False)
+        self._sparse_dims = nd.get('sparse_dims', [5, 6, 9, 10, 12])
+        self._log1p_scale = float(nd.get('log1p_scale', 1000.0))
+
+        # ── sparse_v_credit from training config ──
+        self._sparse_v_credit = float(nd.get('sparse_v_credit', 0.0))
+
+        # ── RTG scale (replaces z-score mean/std) ──
+        self._rtg_scale = float(nd.get('rtg_scale', 1.0))
 
         block_config = model_param['block_config']
         critic_type = nd.get('critic_type', model_param.get('critic_type', 'mlp'))
@@ -267,14 +286,43 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
             C_target=cpa,
             K=model_param.get('K', 20),
             scale=model_param.get('scale', 2000),
-            rtg_v_mean=rtg_v_mean,
-            rtg_v_std=rtg_v_std,
-            rtg_c_mean=rtg_c_mean,
-            rtg_c_std=rtg_c_std,
+            rtg_scale=self._rtg_scale,
         )
         self._device = device
         self._budget = budget
         self._cpa = cpa
+        self._critic_alpha = model_param.get('critic_alpha', 1.0)  # 1.0=off
+        self._capture_attention = model_param.get('capture_attention', False)
+        self._attn_records = [] if self._capture_attention else None
+
+        # ── Sparse state normalization ──
+        # Training applies log1p(x * log1p_scale) BEFORE computing mean/std,
+        # so the saved state_mean/state_std already reflect log1p-space stats.
+        # At inference we apply log1p to the raw state first, then z-score
+        # with the saved mean/std — matching training exactly.
+        self._log1p_enabled = self._log1p_sparse_dims  # always on if trained with it
+        if self._log1p_enabled:
+            logger.info(f'[DGAB log1p] enabled on dims {self._sparse_dims} '
+                        f'(log1p_scale={self._log1p_scale})')
+        else:
+            logger.info('[DGAB log1p] disabled (model was not trained with log1p)')
+
+        # ── Sparse-PV improvements ──
+        # RTG V_goal capping: prevent wildly over-optimistic RTG in sparse env
+        self._rtg_v_cap = model_param.get('rtg_v_cap', None)
+        self._pvalue_mean_base = model_param.get('pvalue_mean_base', None)
+
+        self._V_goal = self._compute_v_goal(budget, cpa)
+
+        # Re-init rollout with capped V_goal
+        self._rollout.__init__(
+            self._rollout.model,
+            V_goal=self._V_goal,
+            C_target=self._cpa,
+            K=self._rollout.K,
+            scale=self._rollout.scale,
+            rtg_scale=self._rtg_scale,
+        )
 
         # Per-tick state tracking (for StateBuilder16 pattern)
         self._bid_means = []
@@ -294,15 +342,61 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
         self._volumes = []
         self._rollout.__init__(
             self._rollout.model,
-            V_goal=self._budget / (self._cpa + EPS),
+            V_goal=self._V_goal,
             C_target=self._cpa,
             K=self._rollout.K,
             scale=self._rollout.scale,
-            rtg_v_mean=self._rtg_v_mean,
-            rtg_v_std=self._rtg_v_std,
-            rtg_c_mean=self._rtg_c_mean,
-            rtg_c_std=self._rtg_c_std,
+            rtg_scale=self._rtg_scale,
         )
+
+    def _compute_v_goal(self, budget, cpa):
+        """Compute a PV-density-aware V_goal instead of naive budget/cpa.
+
+        In sparse environments (low pvalue_mean_base), budget/cpa yields
+        an unrealistically high V_goal (e.g. 150 conversions when only ~0.4
+        are achievable).  This causes RTG to stagnate at the initial value
+        for the entire episode, leading to token collapse in the transformer.
+
+        Strategy: only reduce V_goal when PV density is significantly below
+        training density.  For PV at or above training levels, keep the
+        original formula (the model works well there already).
+        """
+        naive_vgoal = budget / (cpa + EPS)
+
+        # 1) Explicit cap from model_param
+        if self._rtg_v_cap is not None:
+            return min(naive_vgoal, self._rtg_v_cap)
+
+        # 2) Auto-cap from pvalue_mean_base
+        if self._pvalue_mean_base is not None:
+            # state_mean[5] may be in log1p space if log1p was applied
+            # during training — invert to get the raw training pv_mean.
+            if self._log1p_enabled and 5 in self._sparse_dims:
+                training_pv = (np.exp(self._state_mean[5]) - 1) / self._log1p_scale
+            else:
+                training_pv = float(self._state_mean[5])
+            pv_ratio = self._pvalue_mean_base / (training_pv + EPS)
+
+            if pv_ratio >= 1.0:
+                # PV at or above training density — keep original V_goal
+                # (the model already works well in this regime)
+                return naive_vgoal
+            else:
+                # PV below training — scale V_goal down with sqrt ratio
+                # e.g. pv_ratio=0.2 → scale=0.447 → V_goal=67
+                #      pv_ratio=0.6 → scale=0.774 → V_goal=116
+                #      pv_ratio=1.0 → scale=1.000 → V_goal=150 (unchanged)
+                scale_factor = pv_ratio ** 0.5
+                v_goal = max(naive_vgoal * scale_factor, 20.0)  # floor at 20
+                v_goal = min(v_goal, naive_vgoal)
+                logger.info(
+                    f'[DGAB V_goal] pv={self._pvalue_mean_base:.6f} '
+                    f'training_pv={training_pv:.6f} ratio={pv_ratio:.2f} '
+                    f'naive={naive_vgoal:.1f} capped={v_goal:.1f}')
+                return v_goal
+
+        # 3) No cap — use original formula
+        return naive_vgoal
 
     @staticmethod
     def _mean(lst):
@@ -353,6 +447,53 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
         self._pv_means.append(float(np.mean(pv_vals)) if len(pv_vals) > 0 else 0.0)
         self._volumes.append(len(pv_vals))
 
+    def _critic_rtg(self):
+        """Run Critic to estimate remaining RTG from current step to end."""
+        import torch
+        if self._rollout.model.critic_type != 'sequence':
+            return None
+        rtg_list = self._rollout.rtgs
+        if len(rtg_list) < 2:
+            return None
+        K = self._rollout.K
+        rtgs = rtg_list[-K:]
+        states = self._rollout.states[-K:]
+        actions = self._rollout.actions[-K:]
+        timesteps = self._rollout.timesteps[-K:]
+        n = len(rtgs); pad = K - n
+        if pad > 0:
+            z2 = torch.zeros(2, device=self._device); z16 = torch.zeros(16, device=self._device)
+            z1 = torch.zeros(1, device=self._device); zt = torch.tensor(0, device=self._device)
+            rtgs = [z2.clone()] * pad + rtgs
+            states = [z16.clone()] * pad + states
+            actions = [z1.clone()] * pad + actions
+            timesteps = [zt.clone()] * pad + timesteps
+        rtg_seq = torch.stack(rtgs).unsqueeze(0)
+        state_seq = torch.stack(states).unsqueeze(0)
+        action_seq = torch.stack(actions).unsqueeze(0)
+        time_seq = torch.tensor([int(t.item()) for t in timesteps], device=self._device).unsqueeze(0)
+        mask = torch.cat([torch.zeros(pad, device=self._device),
+                          torch.ones(n, device=self._device)]).unsqueeze(0)
+        with torch.no_grad():
+            v_pred, c_pred = self._rollout.model.critic(
+                rtg_seq, state_seq, action_seq, time_seq, attention_mask=mask)
+        return float(v_pred[0, -1, 0].item()), float(c_pred[0, -1, 0].item())
+
+    def save_attention(self, filepath=None):
+        """Save captured attention maps and print summary."""
+        import torch as _t
+        if not self._attn_records:
+            logger.warning('No attention data captured.')
+            return
+        import os as _os
+        path = filepath or _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                          '..', '..', 'exp_data', 'dgab_attention.pt')
+        _os.makedirs(_os.path.dirname(path), exist_ok=True)
+        _t.save(self._attn_records, path)
+        n_layers = len(self._attn_records[0]['layers'])
+        n_heads = self._attn_records[0]['layers'][0].shape[1]
+        logger.info(f'Attention saved: {len(self._attn_records)} ticks × {n_layers} layers × {n_heads} heads → {path}')
+
     def bidding(self, timeStepIndex, pValues, pValueSigmas,
                 historyPValueInfo, historyBid,
                 historyAuctionResult, historyImpressionResult,
@@ -364,35 +505,69 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
 
         # Build 16-dim state
         state_raw = self._build_state(timeStepIndex, pValues)
+
+        # ── State normalization (must match training pipeline) ──
+        # Training: build raw state → log1p on sparse dims → z-score with saved mean/std
+        # So saved mean/std are already in log1p space; we just apply log1p first.
+        if self._log1p_enabled:
+            for d in self._sparse_dims:
+                state_raw[d] = np.log1p(state_raw[d] * self._log1p_scale)
         state_norm = (state_raw - self._state_mean) / self._state_std
 
         # Update RTG from previous tick
         v_prev, c_prev = 0.0, 0.0
         if historyImpressionResult:
             last_imp = np.asarray(historyImpressionResult[-1], dtype=np.float32)
-            v_prev = float(last_imp[:, 1].sum())  # conversionAction
+            v_prev = float(last_imp[:, 1].sum())
             last_auc = np.asarray(historyAuctionResult[-1], dtype=np.float32)
-            # cost_pit * is_exposed_pit = 实际扣费 (只有曝光的广告位才真正扣钱)
             c_prev = float((last_auc[:, 2] * last_imp[:, 0]).sum())
-            if v_prev == 0.0 and c_prev > 0:
-                expected_v_loss = c_prev / (self.cpa + EPS)
-                # 扣减一半的期望转化，平滑过渡，防止网络崩溃
-                v_prev = expected_v_loss * 0.5
 
             # ── RTG debug logging ──
             rtg_before = self._rollout.rtg.cpu().numpy()
-            dv_norm = v_prev / self._rtg_v_std
-            dc_norm = c_prev / self._rtg_c_std
 
-            self._rollout.update_rtg(v_prev, c_prev)
+            # ── Pseudo-V correction (sparse_v_credit from training) ──
+            # NOTE: The reference DGABFOBiddingStrategy does NOT apply pseudo-V
+            # at inference — it only uses actual v/c for open-loop RTG.
+            # Pseudo-V was a training-time feature to create more informative
+            # RTG labels.  At inference, the open-loop RTG self-corrects via
+            # actual rewards.  Adding pseudo-V at inference can cause RTG_v
+            # to decrease too slowly (pseudo_v << actual_v), keeping RTG_v
+            # high and encouraging overspending in sparse environments.
+            v_effective = v_prev
 
-            rtg_after = self._rollout.rtg.cpu().numpy()
-
-            logger.info(
-                f'[DGAB RTG tick={timeStepIndex:02d}] '
-                f'v_norm={dv_norm:.4f} c_norm={dc_norm:.4f} | '
-                f'rtg_before=[{rtg_before[0]:.4f}, {rtg_before[1]:.4f}] '
-                f'rtg_after=[{rtg_after[0]:.4f}, {rtg_after[1]:.4f}]')
+            # Critic guidance: blend RTG with Critic estimate FIRST, THEN subtract actual
+            if self._critic_alpha < 1.0 and timeStepIndex >= 2:
+                critic_result = self._critic_rtg()
+                if critic_result is not None:
+                    v_critic, c_critic = critic_result
+                    a = self._critic_alpha
+                    # 1) Blend: correct the accumulated RTG with Critic's re-estimate
+                    rtg_cur = self._rollout.rtg.cpu().numpy()
+                    v_blend = a * rtg_cur[0] + (1 - a) * v_critic
+                    c_blend = a * rtg_cur[1] + (1 - a) * c_critic
+                    self._rollout.rtg = torch.tensor(
+                        [v_blend, c_blend], dtype=torch.float32, device=self._device)
+                    # 2) THEN subtract actual (using v_effective for sparse correction)
+                    self._rollout.update_rtg(v_effective, c_prev)
+                    rtg_after = self._rollout.rtg.cpu().numpy()
+                    logger.info(
+                        f'[DGAB RTG tick={timeStepIndex:02d}] '
+                        f'v_real={v_prev:.2f} v_eff={v_effective:.4f} c={c_prev:.2f} | '
+                        f'critic=[{v_critic:.4f},{c_critic:.4f}] '
+                        f'blend=[{v_blend:.4f},{c_blend:.4f}] '
+                        f'sub=[{rtg_after[0]:.4f},{rtg_after[1]:.4f}] '
+                        f'(α={a:.2f})')
+                else:
+                    self._rollout.update_rtg(v_effective, c_prev)
+            else:
+                # Pure open-loop: subtract with sparse correction
+                self._rollout.update_rtg(v_effective, c_prev)
+                rtg_after = self._rollout.rtg.cpu().numpy()
+                logger.info(
+                    f'[DGAB RTG tick={timeStepIndex:02d}] '
+                    f'v_real={v_prev:.2f} v_eff={v_effective:.4f} c={c_prev:.2f} | '
+                    f'rtg_before=[{rtg_before[0]:.4f},{rtg_before[1]:.4f}] '
+                    f'rtg_after=[{rtg_after[0]:.4f},{rtg_after[1]:.4f}]')
         else:
             self._rollout.update_rtg(v_prev, c_prev)
 
@@ -403,6 +578,18 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
         self._update_state(historyBid, historyLeastWinningCost,
                           historyAuctionResult, historyImpressionResult,
                           historyPValueInfo)
+
+        # ── Capture attention maps ──
+        if self._capture_attention:
+            try:
+                layer_attns = {}
+                for i, block in enumerate(self._rollout.model.actor.transformer):
+                    if hasattr(block.attn, '_attn_map'):
+                        attn = block.attn._attn_map.detach().cpu()  # [1, n_head, T, T]
+                        layer_attns[i] = attn
+                self._attn_records.append({'tick': timeStepIndex, 'layers': layer_attns})
+            except Exception:
+                pass
 
         return alpha * np.asarray(pValues, dtype=np.float64)
 

@@ -1,15 +1,11 @@
 """
-Large-scale experiment: pvalue_mean_base × strategy × advertiser.
+Online experiment: NeurIPSPvGen × strategy × advertiser.
 
-  10 pvalue values: [0.0001 : 0.0001 : 0.001]
-  4 strategies:     GAVE, DT, DGAB, IQL
-  48 advertisers:   0..47
-
-Records per-tick: state (16-dim), alpha, RTG (if available).
-Compares average scores across strategies.
+Usage:
+    python experiment_big.py --prefix exp_dgab_0005
 """
 
-import sys, os, time
+import sys, os, time, argparse
 import numpy as np
 import pandas as pd
 import gin
@@ -35,7 +31,7 @@ from simul_bidding_env.strategy.pid_bidding_strategy import PidBiddingStrategy
 
 # ── Config ──────────────────────────────────────────
 
-DGAB_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_400k_rc'
+DGAB_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_20260627075706'
 GAVE_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/gave_400k_rc'
 DT_SAVE_DIR = './saved_model/DTtest'
 DEVICE = 'cuda:0' if __import__('torch').cuda.is_available() else 'cpu'
@@ -49,8 +45,9 @@ BLOCK_CONFIG = {
     'resid_pdrop': 0.1, 'attn_pdrop': 0.1,
 }
 
-PVALUES = np.arange(0.0001, 0.0011, 0.0001)  # [0.0001, 0.0002, ..., 0.0010]
+PVALUES = [0.005]
 NUM_ADVERTISERS = 48
+OUTPUT_PREFIX = 'exp_online'
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -68,41 +65,28 @@ def make_dgab(budget, cpa, category):
         ),
     )
 
-
 def make_gave(budget, cpa, category):
     from simul_bidding_env.strategy.autobidding_agents import GAVEAuctionNetAgent
     return GAVEAuctionNetAgent(
         budget=budget, cpa=cpa, category=category, name='GAVE',
-        model_param=dict(
-            save_dir=GAVE_SAVE_DIR, hidden_size=512, time_dim=8,
-            block_config=BLOCK_CONFIG, device=DEVICE,
-            expectile=0.99, score_target_mode='prev',
-        ),
+        model_param=dict(save_dir=GAVE_SAVE_DIR, hidden_size=512, time_dim=8,
+                         block_config=BLOCK_CONFIG, device=DEVICE,
+                         expectile=0.99, score_target_mode='prev'),
     )
-
 
 def make_dt(budget, cpa, category):
     from simul_bidding_env.strategy.autobidding_agents import DTAuctionNetAgent
     return DTAuctionNetAgent(
         budget=budget, cpa=cpa, category=category, name='DT',
-        model_param=dict(
-            save_dir=DT_SAVE_DIR, device=DEVICE,
-            target_return=4, scale=2000,
-        ),
+        model_param=dict(save_dir=DT_SAVE_DIR, device=DEVICE, target_return=4, scale=2000),
     )
-
 
 def make_iql(budget, cpa, category):
     from simul_bidding_env.strategy.iql_bidding_strategy import IqlBiddingStrategy
     return IqlBiddingStrategy(budget=budget, cpa=cpa, category=category, name='IQL')
 
 
-STRATEGIES = [
-    ('DGAB', make_dgab),
-    ('GAVE', make_gave),
-    ('DT',   make_dt),
-    ('IQL',  make_iql),
-]
+STRATEGIES = [('DGAB', make_dgab)]
 
 
 # ── Helpers ─────────────────────────────────────────
@@ -139,7 +123,6 @@ def main():
 
         for adv in range(NUM_ADVERTISERS):
             run_idx += 1
-            # ── Create controller with fixed seed for this (pv, adv) ──
             seed = FIXED_SEED * 10000 + int(pv_val * 100000) + adv
             np.random.seed(seed)
             torch.manual_seed(seed)
@@ -150,7 +133,6 @@ def main():
             pv_gen = controller.pvGenerator
 
             controller.reset(episode=0)
-            # Patch pvalue_mean_base AFTER reset (__init__ hardcodes 0.001)
             pv_gen.pvalue_mean_base = pv_val
             pv_gen.pv_values, pv_gen.PValueSigmas = pv_gen.generate()
 
@@ -159,12 +141,10 @@ def main():
             category = controller.category[adv]
 
             for s_name, s_factory in STRATEGIES:
-                # ── Build fresh strategy agent ──
                 player_agent = s_factory(budget=budget, cpa=cpa_target, category=category)
                 controller.player_agent = player_agent
                 agents = controller.load_agents()
                 num_agent = len(agents)
-                # Reset all agents' remaining budgets
                 for i in range(num_agent):
                     agents[i].remaining_budget = controller.budget_list[i]
 
@@ -229,50 +209,42 @@ def main():
                     costs_arr += cost
                     rewards_arr += reward
 
-                    # ── Capture state ──
+                    pv_mean = float(np.mean(pv_values[:, adv]))
+                    bid_mean = float(np.mean(bids[:, adv]))
+                    alpha_est = bid_mean / (pv_mean + 1e-8) if pv_mean > 0 else 0.0
+
+                    # ── State ──
                     state_vec = None
                     try:
-                        if s_name in ('DGAB',):
+                        if s_name == 'DGAB':
                             state_vec = player_agent._build_state(tick, pv_values[:, adv])
-                        elif s_name in ('GAVE', 'DT'):
+                        else:
                             from simul_bidding_env.strategy.autobidding_agents import _build_state_16
                             state_vec = _build_state_16(
                                 tick, agents[adv].remaining_budget, budget,
                                 pv_values[:, adv], history_bids, history_auction_results,
                                 history_impression_results, history_least_winning_costs,
                                 history_pvalue_infos)
-                        else:  # IQL
-                            # IQL builds state differently; skip per-tick capture
-                            pass
                     except Exception:
                         pass
 
-                    # ── Capture RTG ──
-                    rtg_list = None
+                    # ── RTG ──
+                    rtg_v, rtg_c = None, None
                     try:
                         if s_name == 'DGAB':
                             r = player_agent._rollout.rtg.cpu().numpy()
-                            rtg_list = [float(r[0]), float(r[1])]
+                            rtg_v, rtg_c = float(r[0]), float(r[1])
                         elif s_name == 'DT':
                             r = player_agent._dt_model.eval_target_return
-                            rtg_list = [float(r[0, -1])] if r is not None else []
-                        elif s_name == 'GAVE':
-                            pass  # GAVE doesn't expose RTG this way
+                            rtg_v = float(r[0, -1]) if r is not None else None
                     except Exception:
                         pass
 
-                    pv_mean = float(np.mean(pv_values[:, adv]))
-                    bid_mean = float(np.mean(bids[:, adv]))
-                    alpha_est = bid_mean / (pv_mean + 1e-8) if pv_mean > 0 else 0.0
-
                     rec = {
-                        'pvalue_mean_base': pv_val,
-                        'advertiser': adv,
-                        'strategy': s_name,
-                        'tick': tick,
+                        'pvalue_mean_base': pv_val, 'advertiser': adv,
+                        'strategy': s_name, 'tick': tick,
                         'alpha': alpha_est,
-                        'tick_reward': tick_reward,
-                        'tick_cost': tick_cost,
+                        'tick_reward': tick_reward, 'tick_cost': tick_cost,
                         'cum_reward': int(rewards_arr[adv]),
                         'cum_cost': float(costs_arr[adv]),
                         'budget_left': float(agents[adv].remaining_budget),
@@ -280,11 +252,10 @@ def main():
                     if state_vec is not None:
                         for j in range(16):
                             rec[f'state_{j}'] = float(state_vec[j])
-                    if rtg_list is not None:
-                        if len(rtg_list) >= 1:
-                            rec['rtg_v'] = rtg_list[0]
-                        if len(rtg_list) >= 2:
-                            rec['rtg_c'] = rtg_list[1]
+                    if rtg_v is not None:
+                        rec['rtg_v'] = rtg_v
+                    if rtg_c is not None:
+                        rec['rtg_c'] = rtg_c
 
                     all_tick_records.append(rec)
 
@@ -297,21 +268,16 @@ def main():
                     history_impression_results.append(
                         np.stack((is_exposed_pit, conversion_action_pit), axis=-1))
 
-                # ── Final score ──
                 final_reward = rewards_arr[adv]
                 final_cost = costs_arr[adv]
                 score, cpa_real = compute_score(final_reward, final_cost, cpa_target)
 
                 all_summaries.append({
-                    'pvalue_mean_base': pv_val,
-                    'advertiser': adv,
+                    'pvalue_mean_base': pv_val, 'advertiser': adv,
                     'strategy': s_name,
-                    'budget': float(budget),
-                    'cpa_target': float(cpa_target),
-                    'total_reward': int(final_reward),
-                    'total_cost': float(final_cost),
-                    'cpa_real': float(cpa_real),
-                    'score': float(score),
+                    'budget': float(budget), 'cpa_target': float(cpa_target),
+                    'total_reward': int(final_reward), 'total_cost': float(final_cost),
+                    'cpa_real': float(cpa_real), 'score': float(score),
                     'budget_used': float(final_cost / budget),
                 })
 
@@ -320,13 +286,13 @@ def main():
                         f'pv={pv_label} adv={adv} done')
 
     # ── Save ──
+    prefix = OUTPUT_PREFIX
     df_summary = pd.DataFrame(all_summaries)
-    df_summary.to_csv(os.path.join(OUTPUT_DIR, 'exp_big_summary.csv'), index=False)
+    df_summary.to_csv(os.path.join(OUTPUT_DIR, f'{prefix}_summary.csv'), index=False)
 
     df_tick = pd.DataFrame(all_tick_records)
-    df_tick.to_csv(os.path.join(OUTPUT_DIR, 'exp_big_tick_detail.csv'), index=False)
+    df_tick.to_csv(os.path.join(OUTPUT_DIR, f'{prefix}_tick_detail.csv'), index=False)
 
-    # ── Comparison: avg score per strategy per pvalue ──
     comparison = df_summary.groupby(['pvalue_mean_base', 'strategy'])['score'].mean().unstack()
     comparison.columns.name = None
     comparison = comparison.reset_index()
@@ -337,9 +303,8 @@ def main():
     print(comparison.to_string(index=False, float_format=lambda x: f'{x:.2f}'))
     print()
 
-    comparison.to_csv(os.path.join(OUTPUT_DIR, 'exp_big_comparison.csv'), index=False)
+    comparison.to_csv(os.path.join(OUTPUT_DIR, f'{prefix}_comparison.csv'), index=False)
 
-    # Overall avg per strategy
     print('OVERALL AVERAGE SCORE PER STRATEGY:')
     overall = df_summary.groupby('strategy')['score'].mean()
     for s in overall.index:
@@ -347,10 +312,14 @@ def main():
     print()
 
     logger.info(f'Done. Files saved to {OUTPUT_DIR}/')
-    logger.info(f'  exp_big_summary.csv       — {len(df_summary)} rows')
-    logger.info(f'  exp_big_tick_detail.csv   — {len(df_tick)} rows')
-    logger.info(f'  exp_big_comparison.csv    — avg score per pvalue × strategy')
+    logger.info(f'  {prefix}_summary.csv       — {len(df_summary)} rows')
+    logger.info(f'  {prefix}_tick_detail.csv   — {len(df_tick)} rows')
+    logger.info(f'  {prefix}_comparison.csv    — avg score per pvalue × strategy')
 
 
 if __name__ == '__main__':
+    p = argparse.ArgumentParser()
+    p.add_argument('--prefix', default='exp_online', help='output file prefix in exp_data/')
+    args = p.parse_args()
+    OUTPUT_PREFIX = args.prefix
     main()

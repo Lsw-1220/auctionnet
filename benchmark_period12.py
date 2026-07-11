@@ -105,7 +105,7 @@ STRATEGIES = [
     ('DT',   make_dt),
 ]
 
-TEST_ADVERTISERS = [0]  # only test first advertiser
+TEST_ADVERTISERS = list(range(48))  # all 48 advertisers
 
 
 # ── Run replay ─────────────────────────────────────

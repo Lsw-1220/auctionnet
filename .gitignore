@@ -27,3 +27,9 @@ __pycache__/
 /saved_model/
 *.sh
 /log/
+
+# Experiment data & artifacts
+/exp_data/
+*.pt
+*.png
+*.err

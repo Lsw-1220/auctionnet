@@ -177,7 +177,7 @@ def build_agent(name, budget, cpa, category):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', type=str,
-                        default='./strategy_train_env/period-8.csv')
+                        default='./strategy_train_env/data/traffic/period-12.csv')
     parser.add_argument('--advertisers', type=str, default='all',
                         help='Comma-separated advertiser indices, or "all"')
     parser.add_argument('--agents', type=str, default='PID,IQL,GAVE,DGAB',

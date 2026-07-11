@@ -67,8 +67,18 @@ def train_iql_model(train_data_path="./data/traffic/training_data_rlData_folder/
     if device != "cpu" and torch.cuda.is_available():
         model.to(device)
         if multi_gpu and torch.cuda.device_count() > 1:
-            model = nn.DataParallel(model)
-            logger.info(f'Using {torch.cuda.device_count()} GPUs (DataParallel)')
+            # DataParallel wraps the module and only proxies forward(), but IQL
+            # training lives in step() which runs multiple independent
+            # forward-backward-update passes.  Instead, wrap each sub-network
+            # individually so the scatter/gather is applied per forward call
+            # inside step().
+            model.value_net = nn.DataParallel(model.value_net)
+            model.critic1 = nn.DataParallel(model.critic1)
+            model.critic2 = nn.DataParallel(model.critic2)
+            model.critic1_target = nn.DataParallel(model.critic1_target)
+            model.critic2_target = nn.DataParallel(model.critic2_target)
+            model.actors = nn.DataParallel(model.actors)
+            logger.info(f'Using {torch.cuda.device_count()} GPUs (per-subnet DataParallel)')
         else:
             logger.info(f'Using device: {device}')
     else:

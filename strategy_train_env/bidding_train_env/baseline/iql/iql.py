@@ -162,7 +162,7 @@ class IQL(nn.Module):
         self.update_target(self.critic1, self.critic1_target)
         self.update_target(self.critic2, self.critic2_target)
 
-        return critic1_loss.cpu().data.numpy(), value_loss.cpu().data.numpy(), actor_loss.cpu().data.numpy()
+        return critic1_loss.detach().cpu().numpy(), value_loss.detach().cpu().numpy(), actor_loss.detach().cpu().numpy()
 
     def take_actions(self, states):
         '''
@@ -170,17 +170,20 @@ class IQL(nn.Module):
         '''
         states = torch.Tensor(states).type(self.FloatTensor)
         if self.deterministic_action:
-            actions = self.actors.get_det_action(states)
+            mu, _ = self.actors(states)
+            actions = mu.detach()
         else:
-            actions = self.actors.get_action(states)
-        actions = torch.clamp(actions, 0)
+            mu, log_std = self.actors(states)
+            std = log_std.exp()
+            dist = Normal(mu, std)
+            actions = dist.rsample().detach()
+        actions = torch.clamp(actions, min=0)
         actions = actions.cpu().data.numpy()
         return actions
 
     def forward(self, states):
-
-        actions = self.actors.get_det_action(states)
-        actions = torch.clamp(actions, min=0)
+        mu, _ = self.actors(states)
+        actions = torch.clamp(mu, min=0)
         return actions
 
     def calc_policy_loss(self, states, actions):
@@ -191,9 +194,11 @@ class IQL(nn.Module):
             min_Q = torch.min(q1, q2)
 
         exp_a = torch.exp(min_Q - v) * self.temperature
-        exp_a = torch.min(exp_a, torch.FloatTensor([100.0]))
+        exp_a = torch.min(exp_a, exp_a.new_tensor([100.0]))
 
-        _, dist = self.actors.evaluate(states)
+        mu, log_std = self.actors(states)
+        std = log_std.exp()
+        dist = Normal(mu, std)
         log_probs = dist.log_prob(actions)
         actor_loss = -(exp_a * log_probs).mean()
         return actor_loss
@@ -237,7 +242,14 @@ class IQL(nn.Module):
     def save_jit(self, save_path):
         if not os.path.isdir(save_path):
             os.makedirs(save_path)
-        jit_model = torch.jit.script(self.cpu())
+        # Unwrap DataParallel sub-modules before scripting
+        save_self = deepcopy(self)
+        for attr in ('value_net', 'critic1', 'critic2', 'critic1_target',
+                      'critic2_target', 'actors'):
+            sub = getattr(save_self, attr)
+            if isinstance(sub, nn.DataParallel):
+                setattr(save_self, attr, sub.module)
+        jit_model = torch.jit.script(save_self.cpu())
         torch.jit.save(jit_model, f'{save_path}/iql_model.pth')
 
     def load_net(self, load_path="saved_model/fixed_initial_budget", device='cuda:0'):
