@@ -41,10 +41,15 @@ def train_dt_model(train_data_path="./data/traffic/training_data_rlData_folder/t
 
     model = DecisionTransformer(state_dim=state_dim, act_dim=1, state_mean=replay_buffer.state_mean,
                                 state_std=replay_buffer.state_std)
+    dp_model = None
     if device != "cpu" and torch.cuda.is_available():
         model.to(device)
         if multi_gpu and torch.cuda.device_count() > 1:
-            model = nn.DataParallel(model)
+            # DataParallel only proxies forward(), but DT's training logic
+            # lives in step() (forward → loss → backward → optimizer.step).
+            # Wrap the model for data-parallel forward, keep the base model
+            # for optimizer / scheduler / save / inference.
+            dp_model = nn.DataParallel(model)
             logger.info(f'Using {torch.cuda.device_count()} GPUs (DataParallel)')
         else:
             logger.info(f'Using device: {device}')
@@ -56,10 +61,36 @@ def train_dt_model(train_data_path="./data/traffic/training_data_rlData_folder/t
     model.train()
     i = 0
     for states, actions, rewards, dones, rtg, timesteps, attention_mask in dataloader:
-        train_loss = model.step(states, actions, rewards, dones, rtg, timesteps, attention_mask)
+        if device != "cpu":
+            states = states.to(device)
+            actions = actions.to(device)
+            rewards = rewards.to(device)
+            rtg = rtg.to(device)
+            timesteps = timesteps.to(device)
+            attention_mask = attention_mask.to(device)
+
+        if dp_model is not None:
+            # Multi-GPU: forward through DataParallel, optimizer on base model
+            state_preds, action_preds, return_preds, _ = dp_model(
+                states, actions, rewards, rtg[:, :-1], timesteps, attention_mask=attention_mask)
+
+            act_dim = action_preds.shape[2]
+            action_preds = action_preds.reshape(-1, act_dim)[attention_mask.reshape(-1) > 0]
+            action_target = actions.reshape(-1, act_dim)[attention_mask.reshape(-1) > 0]
+            loss = torch.mean((action_preds - action_target) ** 2)
+
+            model.optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), .25)
+            model.optimizer.step()
+            model.scheduler.step()
+            train_loss = loss.detach().cpu().item()
+        else:
+            train_loss = model.step(states, actions, rewards, dones, rtg, timesteps, attention_mask)
+            model.scheduler.step()
+
         i += 1
-        logger.info(f"Step: {i} Action loss: {np.mean(train_loss)}")
-        model.scheduler.step()
+        logger.info(f"Step: {i} Action loss: {train_loss}")
 
     model.save_net(save_dir)
     test_state = np.ones(state_dim, dtype=np.float32)

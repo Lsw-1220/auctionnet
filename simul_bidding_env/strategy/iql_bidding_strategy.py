@@ -10,13 +10,18 @@ class IqlBiddingStrategy(BaseBiddingStrategy):
     IQL Strategy
     """
 
-    def __init__(self, budget=100, name="Iql-PlayerStrategy", cpa=2, category=1):
+    def __init__(self, budget=100, name="Iql-PlayerStrategy", cpa=2, category=1,
+                 model_dir=None):
         super().__init__(budget, name, cpa, category)
 
-        file_name = os.path.dirname(os.path.realpath(__file__))
-        dir_name = file_name
-        model_path = os.path.join(dir_name, "official_agent", "IQL", "iql_model.pth")
-        dict_path = os.path.join(dir_name, "official_agent", "IQL", "normalize_dict.pkl")
+        if model_dir is not None:
+            model_path = os.path.join(model_dir, "iql_model.pth")
+            dict_path = os.path.join(model_dir, "normalize_dict.pkl")
+        else:
+            file_name = os.path.dirname(os.path.realpath(__file__))
+            dir_name = file_name
+            model_path = os.path.join(dir_name, "official_agent", "IQL", "iql_model.pth")
+            dict_path = os.path.join(dir_name, "official_agent", "IQL", "normalize_dict.pkl")
         self.model = torch.jit.load(model_path)
         with open(dict_path, 'rb') as file:
             self.normalize_dict = pickle.load(file)
