@@ -20,11 +20,13 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Add autobidding project to path (adjust if needed)
-_autobidding_root = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), '..', '..', '..', 'autobidding'))
-if os.path.isdir(_autobidding_root):
-    sys.path.insert(0, _autobidding_root)
+# GAVE / DGAB model classes live under strategy_train_env/bidding_train_env/baseline/.
+# strategy_train_env is added to sys.path by the benchmark launcher.
+# When used standalone, add it here:
+_src_root = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..'))
+_src_train = os.path.join(_src_root, 'strategy_train_env')
+if os.path.isdir(_src_train) and _src_train not in sys.path:
+    sys.path.insert(0, _src_train)
 
 from simul_bidding_env.strategy.base_bidding_strategy import BaseBiddingStrategy as AuctionNetBase
 

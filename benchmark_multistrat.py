@@ -60,8 +60,8 @@ BLOCK_CONFIG = {
     'resid_pdrop': 0.1, 'attn_pdrop': 0.1,
 }
 
-GAVE_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/gave_20k_dense'
-DGAB_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_v3_20260701062347'
+GAVE_SAVE_DIR = './saved_model/gave_20k_dense'
+DGAB_SAVE_DIR = './saved_model/dgab_v3'
 DT_SAVE_DIR   = './saved_model/DTdense'
 IQL_SAVE_DIR  = './strategy_train_env/saved_model/IQL_4gpu'
 OUTPUT_DIR    = None  # None → use {_PROJECT_ROOT}/exp_data
