@@ -639,10 +639,15 @@ class DTAuctionNetAgent(AuctionNetBase):
         state_mean = np.asarray(nd['state_mean'], dtype=np.float32)
         state_std  = np.asarray(nd['state_std'],  dtype=np.float32)
 
+        # Convert to tensors on target device so that init_eval() can read
+        # .device from them.  (Plain numpy arrays are not moved by .to().)
+        state_mean_t = torch.tensor(state_mean, device=device)
+        state_std_t  = torch.tensor(state_std,  device=device)
+
         self._dt_model = DecisionTransformer(
             state_dim=16, act_dim=1,
-            state_mean=state_mean,
-            state_std=state_std,
+            state_mean=state_mean_t,
+            state_std=state_std_t,
             action_tanh=False,
             K=model_param.get('K', 10),
             max_ep_len=model_param.get('max_ep_len', 96),
@@ -651,7 +656,7 @@ class DTAuctionNetAgent(AuctionNetBase):
         )
         ckpt = os.path.join(model_param['save_dir'],
                             model_param.get('ckpt_name', 'dt.pt'))
-        self._dt_model.load_net(ckpt)
+        self._dt_model.load_net(ckpt, device=device)
         self._dt_model.to(device)
         self._dt_model.device = device
 

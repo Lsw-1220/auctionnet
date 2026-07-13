@@ -1,22 +1,26 @@
-"""
+r"""
 Multi-strategy online benchmark: PID / IQL / DT / GAVE / DGAB across pvalue_mean_base levels.
 
 Usage:
-    cd D:\\research\\Experiment\\AuctionNet-main
-
     # Full run (8 pv x 48 adv x 5 strategies = 1920 episodes)
     python benchmark_multistrat.py
 
     # Quick test: 1 pv, 1 advertiser
     python benchmark_multistrat.py --pv 0.001 --advertisers 0
 
-    # Custom subset
-    python benchmark_multistrat.py --pv 0.001 0.005 --advertisers 0 1 2 --output my_test
+    # Custom subset with server paths
+    python benchmark_multistrat.py \
+        --gave_dir /data/models/gave_20k_dense \
+        --dgab_dir /data/models/dgab_v3 \
+        --dt_dir   /data/models/DTdense \
+        --iql_dir  /data/models/IQL_4gpu \
+        --output_dir /data/results \
+        --output my_test
 
 Output:
-    exp_data/{prefix}_results.csv      — flat: one row per (pv, strategy, advertiser)
-    exp_data/{prefix}_summary.csv      — aggregated avg per (pv, strategy)
-    exp_data/{prefix}_comparison.csv   — pivot: rows=pvalue_mean_base, cols=strategy, val=avg score
+    {output_dir}/{prefix}_results.csv      — flat: one row per (pv, strategy, advertiser)
+    {output_dir}/{prefix}_summary.csv      — aggregated avg per (pv, strategy)
+    {output_dir}/{prefix}_comparison.csv   — pivot: rows=pvalue_mean_base, cols=strategy, val=avg score
 """
 import sys, os, time, argparse, logging
 import numpy as np
@@ -47,7 +51,7 @@ from simul_bidding_env.strategy.autobidding_agents import (
 )
 
 # ═══════════════════════════════════════════════
-# Config
+# Config (defaults — override via CLI)
 # ═══════════════════════════════════════════════
 
 BLOCK_CONFIG = {
@@ -58,8 +62,9 @@ BLOCK_CONFIG = {
 
 GAVE_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/gave_20k_dense'
 DGAB_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_v3_20260701062347'
-DT_SAVE_DIR = './saved_model/DTtest'
-IQL_SAVE_DIR = './strategy_train_env/saved_model/IQL_4gpu'
+DT_SAVE_DIR   = './saved_model/DTdense'
+IQL_SAVE_DIR  = './strategy_train_env/saved_model/IQL_4gpu'
+OUTPUT_DIR    = None  # None → use {_PROJECT_ROOT}/exp_data
 
 NUM_ADVERTISERS = 48
 NUM_TICK = 48
@@ -80,10 +85,21 @@ def parse_args():
                     help='Advertiser indices to test (default: all 48)')
     ap.add_argument('--output', type=str, default='benchmark_multistrat',
                     help='Output file prefix (default: benchmark_multistrat)')
+    ap.add_argument('--output_dir', type=str, default=None,
+                    help='Output directory (default: {project}/exp_data)')
     ap.add_argument('--device', type=str, default=None,
                     help='Device (default: cuda:0 if available else cpu)')
     ap.add_argument('--seed', type=int, default=FIXED_SEED,
                     help='Random seed (default: 42)')
+    # Model paths
+    ap.add_argument('--gave_dir', type=str, default=None,
+                    help='GAVE model directory')
+    ap.add_argument('--dgab_dir', type=str, default=None,
+                    help='DGAB model directory')
+    ap.add_argument('--dt_dir', type=str, default=None,
+                    help='DT model directory')
+    ap.add_argument('--iql_dir', type=str, default=None,
+                    help='IQL model directory')
     return ap.parse_args()
 
 
@@ -102,7 +118,7 @@ def make_pid(budget, cpa, category, **kw):
 def make_iql(budget, cpa, category, **kw):
     from simul_bidding_env.strategy.iql_bidding_strategy import IqlBiddingStrategy
     return IqlBiddingStrategy(budget=budget, cpa=cpa, category=category, name='IQL',
-                              model_dir=IQL_SAVE_DIR)
+                              model_dir=IQL_SAVE_DIR, device=DEVICE)
 
 
 def make_dt(budget, cpa, category, **kw):
@@ -294,7 +310,7 @@ def run_one_episode(controller, player_index, agent_factory, pvalue_mean_base):
 # ═══════════════════════════════════════════════
 
 def main():
-    global DEVICE
+    global DEVICE, GAVE_SAVE_DIR, DGAB_SAVE_DIR, DT_SAVE_DIR, IQL_SAVE_DIR, OUTPUT_DIR
 
     args = parse_args()
 
@@ -303,6 +319,13 @@ def main():
     advertisers = args.advertisers if args.advertisers is not None else list(range(NUM_ADVERTISERS))
     output_prefix = args.output
     seed = args.seed
+
+    # Apply CLI path overrides
+    if args.gave_dir:   GAVE_SAVE_DIR = args.gave_dir
+    if args.dgab_dir:   DGAB_SAVE_DIR = args.dgab_dir
+    if args.dt_dir:     DT_SAVE_DIR   = args.dt_dir
+    if args.iql_dir:    IQL_SAVE_DIR  = args.iql_dir
+    OUTPUT_DIR = args.output_dir  # None → use default below
 
     np.random.seed(seed)
     import torch
@@ -313,6 +336,7 @@ def main():
     logger.info(f'Advertisers ({len(advertisers)}): {advertisers if len(advertisers) <= 10 else f"{advertisers[:5]}...{advertisers[-2:]}" }')
     logger.info(f'Strategies: {[n for n, _ in STRATEGIES]}')
     logger.info(f'Total episodes: {len(pv_sweep) * len(advertisers) * len(STRATEGIES)}')
+    logger.info(f'Model dirs — GAVE: {GAVE_SAVE_DIR}  DGAB: {DGAB_SAVE_DIR}  DT: {DT_SAVE_DIR}  IQL: {IQL_SAVE_DIR}')
 
     from simul_bidding_env.strategy.pid_bidding_strategy import PidBiddingStrategy
     dummy_agent = PidBiddingStrategy(exp_tempral_ratio=np.ones(48))
@@ -356,23 +380,24 @@ def main():
                                 f'cpa={res["cpa_real"]:.2f} ({elapsed:.1f}s)')
 
     # ── Save results ──
-    os.makedirs(os.path.join(_PROJECT_ROOT, 'exp_data'), exist_ok=True)
+    out_dir = OUTPUT_DIR if OUTPUT_DIR else os.path.join(_PROJECT_ROOT, 'exp_data')
+    os.makedirs(out_dir, exist_ok=True)
 
     df = pd.DataFrame(results)
-    out_results = os.path.join(_PROJECT_ROOT, 'exp_data', f'{output_prefix}_results.csv')
+    out_results = os.path.join(out_dir, f'{output_prefix}_results.csv')
     df.to_csv(out_results, index=False)
     logger.info(f'Results saved to {out_results}')
 
     # Summary: avg per (pv, strategy)
     metric_cols = ['score', 'reward', 'cost', 'cpa_real', 'budget_used']
     summary = df.groupby(['pvalue_mean_base', 'strategy'])[metric_cols].mean().reset_index()
-    out_summary = os.path.join(_PROJECT_ROOT, 'exp_data', f'{output_prefix}_summary.csv')
+    out_summary = os.path.join(out_dir, f'{output_prefix}_summary.csv')
     summary.to_csv(out_summary, index=False)
     logger.info(f'Summary saved to {out_summary}')
 
     # Comparison pivot: avg score by (pv x strategy)
     pivot = df.groupby(['pvalue_mean_base', 'strategy'])['score'].mean().unstack('strategy')
-    out_comp = os.path.join(_PROJECT_ROOT, 'exp_data', f'{output_prefix}_comparison.csv')
+    out_comp = os.path.join(out_dir, f'{output_prefix}_comparison.csv')
     pivot.to_csv(out_comp)
     logger.info(f'Comparison pivot saved to {out_comp}')
 

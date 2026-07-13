@@ -11,7 +11,7 @@ class IqlBiddingStrategy(BaseBiddingStrategy):
     """
 
     def __init__(self, budget=100, name="Iql-PlayerStrategy", cpa=2, category=1,
-                 model_dir=None):
+                 model_dir=None, device='cpu'):
         super().__init__(budget, name, cpa, category)
 
         if model_dir is not None:
@@ -22,7 +22,8 @@ class IqlBiddingStrategy(BaseBiddingStrategy):
             dir_name = file_name
             model_path = os.path.join(dir_name, "official_agent", "IQL", "iql_model.pth")
             dict_path = os.path.join(dir_name, "official_agent", "IQL", "normalize_dict.pkl")
-        self.model = torch.jit.load(model_path)
+        self.model = torch.jit.load(model_path, map_location=torch.device(device))
+        self._device = device
         with open(dict_path, 'rb') as file:
             self.normalize_dict = pickle.load(file)
 
@@ -101,9 +102,9 @@ class IqlBiddingStrategy(BaseBiddingStrategy):
         for key, value in self.normalize_dict.items():
             test_state[key] = normalize(test_state[key], value["min"], value["max"])
 
-        test_state = torch.tensor(test_state, dtype=torch.float)
+        test_state = torch.tensor(test_state, dtype=torch.float, device=self._device)
         alpha = self.model(test_state)
-        alpha = alpha.cpu().numpy()
+        alpha = alpha.detach().cpu().numpy()
         bids = alpha * pValues
 
         return bids
