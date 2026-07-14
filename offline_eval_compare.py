@@ -1,45 +1,56 @@
 """
-Offline evaluation comparison: GAVE vs DGAB-FO using AuctionNet's offline test pipeline.
+Offline evaluation comparison: PID / IQL / DT / GAVE / DGAB using AuctionNet's offline test pipeline.
 
 Uses TestDataLoader + OfflineEnv — compares bids against historical leastWinningCost.
 No live competition; opponent behavior is frozen from the logged data.
 
 Usage:
-    python offline_eval_compare.py
-    python offline_eval_compare.py --data ./strategy_train_env/data/traffic/period-8.csv
-    python offline_eval_compare.py --data ./data/log/0.csv --advertisers 0,4,24
+    # Single file
+    python offline_eval_compare.py --data ./strategy_train_env/data/traffic/period-12.csv
+
+    # Batch: all CSV files in a folder
+    python offline_eval_compare.py --data_dir ./strategy_train_env/data/traffic/
+
+    # Custom settings
+    python offline_eval_compare.py --data_dir ./data/logs/ --agents GAVE,DGAB --advertisers 0,4,24 --output my_results
 """
-import sys, os
+import sys, os, glob, time, argparse, logging
+import numpy as np
+import pandas as pd
+
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _PROJECT_ROOT)
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, 'strategy_train_env'))
 
-# Import from strategy_train_env BEFORE autobidding path is added
-# (both projects have bidding_train_env/ with different submodules)
+# ── Local imports (no autobidding dependency) ──
 from bidding_train_env.offline_eval.test_dataloader import TestDataLoader
 from bidding_train_env.offline_eval.offline_env import OfflineEnv
-
-# Now add autobidding path for GAVE/DGAB imports
-# Must clear cached bidding_train_env so it reloads from autobidding
-_AUTOBIDDING_ROOT = os.path.normpath(os.path.join(_PROJECT_ROOT, '..', 'autobidding'))
-if os.path.isdir(_AUTOBIDDING_ROOT):
-    sys.path.insert(0, _AUTOBIDDING_ROOT)
-    # Invalidate cached imports that were loaded from strategy_train_env
-    for _mod in list(sys.modules):
-        if _mod.startswith('bidding_train_env'):
-            del sys.modules[_mod]
-
-import numpy as np
-import logging
-import time
-import argparse
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
+# ═══════════════════════════════════════════════
+# Config (defaults — override via CLI)
+# ═══════════════════════════════════════════════
+
+BLOCK_CONFIG = {
+    'n_ctx': 1024, 'n_embd': 512, 'n_layer': 8, 'n_head': 16,
+    'n_inner': 1024, 'activation_function': 'relu', 'n_position': 1024,
+    'resid_pdrop': 0.1, 'attn_pdrop': 0.1,
+}
+
+GAVE_SAVE_DIR = './saved_model/gave_20k_dense'
+DGAB_SAVE_DIR = './saved_model/dgab_v3'
+DT_SAVE_DIR   = './saved_model/DTdense'
+IQL_SAVE_DIR  = './strategy_train_env/saved_model/IQL_4gpu'
+
+FIXED_SEED = 42
+
+# ═══════════════════════════════════════════════
+# Scoring
+# ═══════════════════════════════════════════════
 
 def getScore_neurips(reward, cpa, cpa_constraint):
-    """AuctionNet scoring function."""
     beta = 2
     if cpa > cpa_constraint:
         penalty = (cpa_constraint / (cpa + 1e-10)) ** beta
@@ -47,6 +58,10 @@ def getScore_neurips(reward, cpa, cpa_constraint):
         penalty = 1.0
     return penalty * reward
 
+
+# ═══════════════════════════════════════════════
+# Offline evaluation runner
+# ═══════════════════════════════════════════════
 
 def run_offline_eval(agent, data_path, advertiser_key):
     """Run offline evaluation for one advertiser with the given agent."""
@@ -81,9 +96,9 @@ def run_offline_eval(agent, data_path, advertiser_key):
                 history["historyImpressionResult"],
                 history["historyLeastWinningCost"])
 
-        # Over-cost handling (same as original offline eval)
+        # Over-cost handling
         over_cost_ratio = max((np.sum(bid > lwc) * np.mean(lwc) - agent.remaining_budget) /
-                              (np.sum(bid > lwc) * np.mean(lwc) + 1e-4), 0)
+                            (np.sum(bid > lwc) * np.mean(lwc) + 1e-4), 0)
         loop = 0
         while over_cost_ratio > 0 and loop < 5:
             pv_index = np.where(bid >= lwc)[0]
@@ -93,7 +108,7 @@ def run_offline_eval(agent, data_path, advertiser_key):
             dropped = np.random.choice(pv_index, min(drop_n, len(pv_index)), replace=False)
             bid[dropped] = 0
             over_cost_ratio = max((np.sum(bid > lwc) * np.mean(lwc) - agent.remaining_budget) /
-                                  (np.sum(bid > lwc) * np.mean(lwc) + 1e-4), 0)
+                                (np.sum(bid > lwc) * np.mean(lwc) + 1e-4), 0)
             loop += 1
 
         tick_value, tick_cost_vec, tick_status, tick_conversion = env.simulate_ad_bidding(
@@ -127,134 +142,225 @@ def run_offline_eval(agent, data_path, advertiser_key):
     }
 
 
-def build_agent(name, budget, cpa, category):
-    """Build an agent instance by name."""
+# ═══════════════════════════════════════════════
+# Agent builders
+# ═══════════════════════════════════════════════
+
+def build_agent(name, budget, cpa, category, device='cpu'):
     if name == 'PID':
         from simul_bidding_env.strategy.pid_bidding_strategy import PidBiddingStrategy
         return PidBiddingStrategy(budget=budget, cpa=cpa, category=category,
                                   name='PID', exp_tempral_ratio=np.ones(48))
     elif name == 'IQL':
         from simul_bidding_env.strategy.iql_bidding_strategy import IqlBiddingStrategy
-        return IqlBiddingStrategy(budget=budget, cpa=cpa, category=category, name='IQL')
-    elif name == 'OnlineLP':
-        from simul_bidding_env.strategy.onlinelp_bidding_strategy import OnlineLpBiddingStrategy
-        return OnlineLpBiddingStrategy(budget=budget, cpa=cpa, category=category,
-                                       name='OnlineLP', episode=0)
+        return IqlBiddingStrategy(budget=budget, cpa=cpa, category=category, name='IQL',
+                                  model_dir=IQL_SAVE_DIR, device=device)
+    elif name == 'DT':
+        from simul_bidding_env.strategy.autobidding_agents import DTAuctionNetAgent
+        return DTAuctionNetAgent(
+            budget=budget, cpa=cpa, category=category, name='DT',
+            model_param=dict(save_dir=DT_SAVE_DIR, device=device,
+                            target_return=4, scale=2000))
     elif name == 'GAVE':
         from simul_bidding_env.strategy.autobidding_agents import GAVEAuctionNetAgent
-        BLOCK_CONFIG = {
-            'n_ctx': 1024, 'n_embd': 512, 'n_layer': 8, 'n_head': 16,
-            'n_inner': 1024, 'activation_function': 'relu', 'n_position': 1024,
-            'resid_pdrop': 0.1, 'attn_pdrop': 0.1,
-        }
-        GAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/gave_400k_sparse'
-        DEVICE = 'cpu'
         return GAVEAuctionNetAgent(
             budget=budget, cpa=cpa, category=category, name='GAVE',
-            model_param=dict(
-                save_dir=GAVE_DIR, hidden_size=512, time_dim=8,
-                block_config=BLOCK_CONFIG, device=DEVICE,
-                expectile=0.99, score_target_mode='prev'))
+            model_param=dict(save_dir=GAVE_SAVE_DIR, hidden_size=512, time_dim=8,
+                            block_config=BLOCK_CONFIG, device=device,
+                            expectile=0.99, score_target_mode='prev'))
     elif name == 'DGAB':
         from simul_bidding_env.strategy.autobidding_agents import DGABFOAuctionNetAgent
-        BLOCK_CONFIG = {
-            'n_ctx': 1024, 'n_embd': 512, 'n_layer': 8, 'n_head': 16,
-            'n_inner': 1024, 'activation_function': 'relu', 'n_position': 1024,
-            'resid_pdrop': 0.1, 'attn_pdrop': 0.1,
-        }
-        DGAB_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_400k_sparse'
-        DEVICE = 'cpu'
         return DGABFOAuctionNetAgent(
-            budget=budget, cpa=cpa, category=category, name='DGAB-FO',
-            model_param=dict(
-                save_dir=DGAB_DIR, hidden_size=512, max_ep_len=96,
-                time_dim=8, block_config=BLOCK_CONFIG, device=DEVICE,
-                actor_type='stack', critic_type='sequence'))
+            budget=budget, cpa=cpa, category=category, name='DGAB',
+            model_param=dict(save_dir=DGAB_SAVE_DIR, hidden_size=512, max_ep_len=96,
+                            time_dim=8, block_config=BLOCK_CONFIG, device=device,
+                            actor_type='stack', critic_type='sequence'))
     else:
         raise ValueError(f'Unknown agent: {name}')
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--data', type=str,
-                        default='./strategy_train_env/data/traffic/period-12.csv')
-    parser.add_argument('--advertisers', type=str, default='all',
-                        help='Comma-separated advertiser indices, or "all"')
-    parser.add_argument('--agents', type=str, default='PID,IQL,GAVE,DGAB',
-                        help='Comma-separated agent names')
-    args = parser.parse_args()
+# ═══════════════════════════════════════════════
+# Main
+# ═══════════════════════════════════════════════
 
-    loader = TestDataLoader(file_path=args.data)
-    all_keys = loader.keys
-    logger.info(f'Data: {args.data} — {len(all_keys)} (period, advertiser) pairs')
+def parse_args():
+    ap = argparse.ArgumentParser(description='Offline evaluation comparison')
+    ap.add_argument('--data', type=str, default=None,
+                    help='Single CSV file to evaluate')
+    ap.add_argument('--data_dir', type=str, default=None,
+                    help='Folder of CSV files to evaluate (overrides --data)')
+    ap.add_argument('--pattern', type=str, default='*.csv',
+                    help='Glob pattern for --data_dir (default: *.csv)')
+    ap.add_argument('--advertisers', type=str, default='all',
+                    help='Comma-separated advertiser indices, or "all"')
+    ap.add_argument('--agents', type=str, default='PID,IQL,DT,GAVE,DGAB',
+                    help='Comma-separated agent names')
+    ap.add_argument('--output', type=str, default='offline_eval',
+                    help='Output file prefix (default: offline_eval)')
+    ap.add_argument('--output_dir', type=str, default=None,
+                    help='Output directory (default: {project}/exp_data)')
+    ap.add_argument('--device', type=str, default=None,
+                    help='Device (default: cuda:0 if available else cpu)')
+    ap.add_argument('--seed', type=int, default=FIXED_SEED)
+    # Model paths
+    ap.add_argument('--gave_dir', type=str, default=None)
+    ap.add_argument('--dgab_dir', type=str, default=None)
+    ap.add_argument('--dt_dir', type=str, default=None)
+    ap.add_argument('--iql_dir', type=str, default=None)
+    return ap.parse_args()
+
+
+def collect_data_files(data_path, data_dir, pattern):
+    """Return list of (label, path) tuples."""
+    if data_dir:
+        files = sorted(glob.glob(os.path.join(data_dir, pattern)))
+        if not files:
+            logger.error(f'No files matching "{pattern}" in {data_dir}')
+            sys.exit(1)
+        logger.info(f'Found {len(files)} files in {data_dir}')
+        return [(os.path.basename(f), f) for f in files]
+    elif data_path:
+        return [(os.path.basename(data_path), data_path)]
+    else:
+        logger.error('Must specify --data or --data_dir')
+        sys.exit(1)
+
+
+def main():
+    global GAVE_SAVE_DIR, DGAB_SAVE_DIR, DT_SAVE_DIR, IQL_SAVE_DIR
+
+    args = parse_args()
+
+    DEVICE = args.device or ('cuda:0' if __import__('torch').cuda.is_available() else 'cpu')
+    if args.gave_dir:   GAVE_SAVE_DIR = args.gave_dir
+    if args.dgab_dir:   DGAB_SAVE_DIR = args.dgab_dir
+    if args.dt_dir:     DT_SAVE_DIR   = args.dt_dir
+    if args.iql_dir:    IQL_SAVE_DIR  = args.iql_dir
+
+    import torch
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
     agent_names = [s.strip() for s in args.agents.split(',')]
+    data_files = collect_data_files(args.data, args.data_dir, args.pattern)
 
-    if args.advertisers == 'all':
-        # Collect unique advertiser numbers
-        adv_set = sorted(set(k[1] for k in all_keys))
-    else:
-        adv_set = [int(x) for x in args.advertisers.split(',')]
-
-    logger.info(f'Advertisers: {adv_set}')
+    logger.info(f'Device: {DEVICE}')
     logger.info(f'Agents: {agent_names}')
+    logger.info(f'Data files: {[f[0] for f in data_files]}')
 
-    # Get budget/CPA from data
-    import pandas as pd
-    raw = pd.read_csv(args.data)
-    adv_info = {}
-    for adv in adv_set:
-        row = raw[raw['advertiserNumber'] == adv].iloc[0]
-        adv_info[adv] = {
-            'budget': row['budget'],
-            'cpa': row['CPAConstraint'],
-            'category': int(row['advertiserCategoryIndex']),
-        }
+    # ── Output dir ──
+    out_dir = args.output_dir or os.path.join(_PROJECT_ROOT, 'exp_data')
+    os.makedirs(out_dir, exist_ok=True)
 
-    all_results = {name: [] for name in agent_names}
+    all_results = []  # flat: one row per (data_file, advertiser, agent)
+    total_runs = 0
     t0 = time.time()
 
-    for adv in adv_set:
-        info = adv_info[adv]
-        # Use the first period key for this advertiser
-        key = next(k for k in all_keys if k[1] == adv)
-        period = int(key[0])
+    for file_label, file_path in data_files:
+        logger.info(f'\n{"="*60}\n  DATA: {file_label}\n{"="*60}')
 
-        logger.info(f'\nAdvertiser #{adv} (budget={info["budget"]}, cpa={info["cpa"]}, period={period})')
+        loader = TestDataLoader(file_path=file_path)
+        all_keys = loader.keys
 
-        for agent_name in agent_names:
-            agent = build_agent(agent_name, info['budget'], info['cpa'], info['category'])
-            agent.remaining_budget = agent.budget
-            result = run_offline_eval(agent, args.data, key)
-            all_results[agent_name].append(result)
-            logger.info(f'  {agent_name:10s}: score={result["score"]:.2f} '
-                        f'reward={result["reward"]} cpa={result["cpa_real"]:.2f} '
-                        f'budget={result["budget_used"]:.0%}')
+        if args.advertisers == 'all':
+            adv_set = sorted(set(k[1] for k in all_keys))
+        else:
+            adv_set = [int(x) for x in args.advertisers.split(',')]
+
+        # Read budget/CPA from this data file
+        raw = pd.read_csv(file_path)
+        adv_info = {}
+        for adv in adv_set:
+            match = raw[raw['advertiserNumber'] == adv]
+            if match.empty:
+                logger.warning(f'  Advertiser #{adv} not found in {file_label}, skipping')
+                continue
+            row = match.iloc[0]
+            adv_info[adv] = {
+                'budget': row['budget'],
+                'cpa': row['CPAConstraint'],
+                'category': int(row['advertiserCategoryIndex']),
+            }
+
+        for adv in adv_set:
+            if adv not in adv_info:
+                continue
+            info = adv_info[adv]
+            # Use the first matching key for this advertiser
+            try:
+                key = next(k for k in all_keys if k[1] == adv)
+            except StopIteration:
+                logger.warning(f'  No key for advertiser #{adv} in {file_label}, skipping')
+                continue
+
+            logger.info(f'  Advertiser #{adv} (budget={info["budget"]}, cpa={info["cpa"]})')
+
+            for agent_name in agent_names:
+                try:
+                    agent = build_agent(agent_name, info['budget'], info['cpa'],
+                                       info['category'], device=DEVICE)
+                except Exception as e:
+                    logger.error(f'    {agent_name}: build FAILED — {e}')
+                    all_results.append({
+                        'data_file': file_label, 'advertiser': adv,
+                        'agent': agent_name, 'score': 0, 'reward': 0,
+                        'cost': 0, 'cpa_real': float('inf'),
+                        'budget_used': 0,
+                    })
+                    total_runs += 1
+                    continue
+
+                agent.remaining_budget = agent.budget
+                try:
+                    result = run_offline_eval(agent, file_path, key)
+                except Exception as e:
+                    logger.error(f'    {agent_name}: eval FAILED — {e}')
+                    result = {'score': 0, 'reward': 0, 'cost': 0,
+                              'cpa_real': float('inf'), 'budget_used': 0}
+
+                total_runs += 1
+                result['data_file'] = file_label
+                result['advertiser'] = adv
+                result['agent'] = agent_name
+                all_results.append(result)
+
+                logger.info(f'    {agent_name:6s}: score={result["score"]:.2f}  '
+                           f'reward={result["reward"]}  cpa={result["cpa_real"]:.2f}  '
+                           f'budget={result["budget_used"]:.0%}')
 
     elapsed = time.time() - t0
-    n_runs = len(adv_set) * len(agent_names)
-    logger.info(f'\nTotal: {n_runs} runs in {elapsed:.0f}s')
+    logger.info(f'\nTotal: {total_runs} runs in {elapsed:.0f}s')
 
-    # ── Summary ──
+    # ── Save results ──
+    df = pd.DataFrame(all_results)
+    cols = ['data_file', 'advertiser', 'agent', 'score', 'reward', 'cost',
+            'cpa_real', 'budget_used']
+    df = df[cols]
+
+    # Detailed results (one row per run)
+    out_detailed = os.path.join(out_dir, f'{args.output}_detailed.csv')
+    df.to_csv(out_detailed, index=False)
+    logger.info(f'Detailed results saved to {out_detailed}')
+
+    # Summary: avg score per (data_file, agent)
+    metric_cols = ['score', 'reward', 'cost', 'cpa_real', 'budget_used']
+    summary = df.groupby(['data_file', 'agent'])[metric_cols].mean().reset_index()
+    out_summary = os.path.join(out_dir, f'{args.output}_summary.csv')
+    summary.to_csv(out_summary, index=False)
+    logger.info(f'Summary saved to {out_summary}')
+
+    # Pivot: data_file × agent → avg score
+    pivot = df.groupby(['data_file', 'agent'])['score'].mean().unstack('agent')
+    out_pivot = os.path.join(out_dir, f'{args.output}_pivot.csv')
+    pivot.to_csv(out_pivot)
+    logger.info(f'Pivot saved to {out_pivot}')
+
+    # ── Console summary ──
     print(f'\n{"="*100}')
-    print(f'OFFLINE EVALUATION — avg over {len(adv_set)} advertisers × {len(agent_names)} strategies')
+    print(f'OFFLINE EVALUATION — {len(data_files)} files × {len(agent_names)} agents')
     print(f'{"="*100}')
-    header = f'{"Metric":<25}' + ''.join(f'{name:>15}' for name in agent_names)
-    print(header)
-    print('-' * len(header))
-    for metric, key, fmt in [
-        ('Score', 'score', '.2f'),
-        ('Reward', 'reward', '.0f'),
-        ('Cost', 'cost', '.0f'),
-        ('CPA real', 'cpa_real', '.2f'),
-        ('Budget used %', 'budget_used', '.1%'),
-    ]:
-        row = f'{metric:<25}'
-        for name in agent_names:
-            v = np.mean([r[key] for r in all_results[name]])
-            row += f'{v:>15{fmt}}'
-        print(row)
-    print()
+    print(pivot.to_string())
+    print(f'\nDone. Results in {out_dir}/')
 
 
 if __name__ == '__main__':
