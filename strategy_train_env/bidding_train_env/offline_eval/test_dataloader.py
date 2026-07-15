@@ -20,7 +20,11 @@ class TestDataLoader:
 
         """
         self.file_path = file_path
-        self.raw_data_path = os.path.join(os.path.dirname(file_path), "raw_data.pickle")
+        # Use per-file pickle name to avoid cross-contamination when
+        # batch-testing multiple CSVs in the same directory.
+        basename = os.path.splitext(os.path.basename(file_path))[0]
+        self.raw_data_path = os.path.join(os.path.dirname(file_path),
+                                          f"{basename}_raw_data.pickle")
         self.raw_data = self._get_raw_data()
         self.keys, self.test_dict = self._get_test_data_dict()
 
