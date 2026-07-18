@@ -300,7 +300,9 @@ def parse_args():
                     help='Override total PV volume (default: gin PVNUM=500000; '
                          'use e.g. 20000 for a quick smoke run)')
     ap.add_argument('--output', type=str, default='po_ablation',
-                    help='Output file prefix under exp_data/')
+                    help='Output file prefix under the output dir')
+    ap.add_argument('--output_dir', type=str, default=None,
+                    help='Output directory (default: {project}/exp_data)')
     return ap.parse_args()
 
 
@@ -400,7 +402,7 @@ def main():
                         torch.cuda.empty_cache()
 
     # ── Save results ──
-    out_dir = os.path.join(_PROJECT_ROOT, 'exp_data')
+    out_dir = args.output_dir or os.path.join(_PROJECT_ROOT, 'exp_data')
     os.makedirs(out_dir, exist_ok=True)
     df = pd.DataFrame(rows)
 
