@@ -93,8 +93,16 @@ class BidFormerEncoder(nn.Module):
         ctx = self.macro_proj(macro).unsqueeze(1)                     # [N, 1, H]
         kpm = (obs_mask < 0.5)                                        # [N, M] True=pad
 
+        # ctx 自身作为兜底 key: 当某步曝光集全为 pad 时(左侧 padding 或当步无曝光),
+        # 保证每行至少一个非 mask key,避免 MultiheadAttention 整行 -inf 导致 softmax 出 NaN。
+        # 此时该步退化为只 attend 自己 == 纯宏观状态 macro_proj(norm(rl)),与 use_obs=False 语义一致。
+        self_kpm = torch.zeros(kpm.shape[0], 1, device=kpm.device, dtype=torch.bool)
+
         for ca, ffn, ln in zip(self.cross_layers, self.ffn_layers, self.ln_layers):
-            attn_out, _ = ca(ln(ctx), imp, imp, key_padding_mask=kpm)
+            q = ln(ctx)
+            kv = torch.cat([q, imp], dim=1)                           # [N, 1+M, H]
+            full_kpm = torch.cat([self_kpm, kpm], dim=1)               # [N, 1+M]
+            attn_out, _ = ca(q, kv, kv, key_padding_mask=full_kpm)
             ctx = ctx + attn_out
             ctx = ctx + ffn(ctx)
 

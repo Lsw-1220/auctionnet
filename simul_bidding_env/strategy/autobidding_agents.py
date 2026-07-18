@@ -597,6 +597,272 @@ class DGABFOAuctionNetAgent(AuctionNetBase):
 
 
 # ──────────────────────────────────────────────
+# DGAB-PO Agent (R0-R5 POMDP ablations)
+# ──────────────────────────────────────────────
+
+_OBS_DIM_PO  = 9    # [pValue, pValueSigma, xi, adSlot, cost, isExposed, conversionAction, bid, lwc]
+_STAT_DIM_PO = 16
+_RL_DIM_PO   = 2
+
+
+def _compute_stat_single_po(obs):
+    """16-dim window statistics from ONE tick's 9-dim obs records.
+
+    Same formulas as training `_compute_stat_seq` (dgab/data_po.py).
+    Dims 14/15 (trend diffs vs previous tick) are filled by the caller.
+    All-zero obs (the t=0 placeholder) returns all zeros — matches the
+    training-time zero-padding skip.
+    """
+    stat = np.zeros(_STAT_DIM_PO, dtype=np.float32)
+    n = obs.shape[0]
+    if n == 0 or (obs == 0).all():
+        return stat
+    pv, sigma, xi = obs[:, 0], obs[:, 1], obs[:, 2]
+    cost, exp, conv = obs[:, 4], obs[:, 5], obs[:, 6]
+    bid, lwc = obs[:, 7], obs[:, 8]
+    won = xi > 0.5
+    cost_won = cost[won]
+    stat[0]  = np.log(n + 1.0)
+    stat[1]  = pv.mean()
+    stat[2]  = pv.std()
+    stat[3]  = np.percentile(pv, 75)
+    stat[4]  = np.percentile(pv, 90)
+    stat[5]  = sigma.mean()
+    stat[6]  = xi.mean()                                      # win_rate
+    stat[7]  = exp.mean()                                     # exp_rate
+    stat[8]  = cost_won.mean()             if won.any() else 0.0
+    stat[9]  = np.percentile(cost_won, 90) if won.any() else 0.0
+    stat[10] = lwc.mean()
+    stat[11] = np.percentile(lwc, 90)
+    stat[12] = np.mean(bid / (lwc + EPS))                     # bid_lwc_ratio
+    stat[13] = conv.sum() / (exp.sum() + EPS)                 # CVR
+    return stat
+
+
+class DGABPOAuctionNetAgent(AuctionNetBase):
+    """
+    DGAB-PO agent (R0-R5 POMDP ablations) for AuctionNet online testing.
+
+    PO bidding mode (matches POMDP_data_generator training口径):
+      base state = z-score([time_left, budget_left])              (R0/R2/R3: 2-dim)
+                   [+ z-score(stat_t, 16-dim window statistics)]  (R1/R4/R5: 18-dim)
+      stat_t and the per-impression obs set are built ONLY from the
+      PREVIOUS tick's auction records — the current tick's market is
+      never observed (partial observability).
+      R2/R3/R5 additionally feed the raw 9-dim obs set (padded to
+      max_imp) to the in-model obs encoder (cls / bidformer).
+      RTG: 2D (V_remain, C_remain) / rtg_scale, open-loop decrement with
+      realized conversions and realized cost (cost × isExposed).
+
+    Architecture config (actor_type / obs_encoder_type / base_state_dim /
+    critic_type / scale / rtg_scale / log1p flags) is read from the
+    checkpoint's normalize_dict.pkl — model_param only supplies sizes.
+
+    model_param keys:
+        save_dir     : checkpoint dir (complete_train.pt + normalize_dict.pkl)
+        hidden_size  : int (default 512)
+        max_ep_len   : int (default 96)
+        time_dim     : int (default 8)
+        block_config : dict (required)
+        device       : str (default 'cpu')
+        K            : int (default 20)
+        max_imp      : int (default 512) — obs padding cap for the encoder
+        rtg_v_cap    : float (default None) — optional V_goal cap
+    """
+
+    def __init__(self, budget=100, name="DGAB-PO-AuctionNet", cpa=2, category=1,
+                 model_param=None):
+        super().__init__(budget=budget, name=name, cpa=cpa, category=category)
+        if model_param is None:
+            model_param = {}
+
+        device = model_param.get('device', 'cpu')
+
+        import torch
+        import pickle
+        from bidding_train_env.baseline.dgab.model_po import DGAB, DGABRollout
+
+        pkl_path = os.path.join(model_param['save_dir'], 'normalize_dict.pkl')
+        with open(pkl_path, 'rb') as f:
+            nd = pickle.load(f)
+
+        self._rl_mean   = np.asarray(nd['resourceleft_mean'], dtype=np.float32)
+        self._rl_std    = np.asarray(nd['resourceleft_std'],  dtype=np.float32)
+        self._stat_mean = np.asarray(nd.get('stat_mean', np.zeros(_STAT_DIM_PO)),
+                                     dtype=np.float32)
+        self._stat_std  = np.asarray(nd.get('stat_std', np.ones(_STAT_DIM_PO)),
+                                     dtype=np.float32)
+
+        base_state_dim = int(nd.get('base_state_dim', _RL_DIM_PO))
+        self._use_stat = model_param.get(
+            'use_stat', base_state_dim >= _RL_DIM_PO + _STAT_DIM_PO)
+        actor_type  = nd.get('actor_type',  model_param.get('actor_type', 'stack'))
+        critic_type = nd.get('critic_type', model_param.get('critic_type', 'sequence'))
+        self._obs_encoder_type = nd.get('obs_encoder_type',
+                                        model_param.get('obs_encoder_type', 'none'))
+        self._obs_dim = int(nd.get('obs_dim', _OBS_DIM_PO))
+        scale         = int(nd.get('scale', 2000))
+        rtg_scale     = float(nd.get('rtg_scale', scale))
+
+        # log1p on sparse stat dims (off in current PO checkpoints; honored if set)
+        self._log1p_stat_dims  = bool(nd.get('log1p_stat_dims', False))
+        self._sparse_stat_dims = list(nd.get('sparse_stat_dims', []))
+        self._log1p_scale      = float(nd.get('log1p_scale', 1000.0))
+
+        self._max_imp = int(model_param.get('max_imp', 512))
+
+        model = DGAB(
+            base_state_dim=base_state_dim, act_dim=1,
+            hidden_size=model_param.get('hidden_size', 512),
+            max_ep_len=model_param.get('max_ep_len', 96),
+            time_dim=model_param.get('time_dim', 8),
+            block_config=model_param['block_config'],
+            actor_type=actor_type,
+            critic_type=critic_type,
+            obs_encoder_type=self._obs_encoder_type,
+            obs_dim=self._obs_dim,
+            macro_dim=_RL_DIM_PO,
+            device=device,
+        )
+        ckpt = os.path.join(model_param['save_dir'],
+                            model_param.get('ckpt_name', 'complete_train.pt'))
+        sd = torch.load(ckpt, map_location=device)
+        n_bad = sum(1 for v in sd.values()
+                    if v.is_floating_point() and not torch.isfinite(v).all())
+        if n_bad > 0:
+            logger.warning(
+                f'[DGAB-PO] checkpoint {ckpt} contains {n_bad}/{len(sd)} '
+                f'non-finite weight tensors (diverged training run) — '
+                f'bids will be NaN and zeroed by the benchmark; retrain this config.')
+        model.load_state_dict(sd)
+        model.to(device)
+        model.eval()
+
+        self._device    = device
+        self._budget    = budget
+        self._cpa       = cpa
+        self._K         = model_param.get('K', 20)
+        self._scale     = scale
+        self._rtg_scale = rtg_scale
+
+        self._V_goal = budget / (cpa + EPS)
+        rtg_v_cap = model_param.get('rtg_v_cap', None)
+        if rtg_v_cap is not None:
+            self._V_goal = min(self._V_goal, float(rtg_v_cap))
+
+        self._rollout = DGABRollout(
+            model, V_goal=self._V_goal, C_target=cpa,
+            K=self._K, scale=scale, rtg_scale=rtg_scale)
+        self._prev_stat = np.zeros(_STAT_DIM_PO, dtype=np.float32)
+
+        logger.info(f'[DGAB-PO] {os.path.basename(str(model_param["save_dir"]))}: '
+                    f'base_state_dim={base_state_dim} use_stat={self._use_stat} '
+                    f'actor={actor_type} obs_enc={self._obs_encoder_type} '
+                    f'critic={critic_type} rtg_scale={rtg_scale} '
+                    f'V_goal={self._V_goal:.1f}')
+
+    def reset(self):
+        self.remaining_budget = self.budget
+        self._prev_stat = np.zeros(_STAT_DIM_PO, dtype=np.float32)
+        self._rollout.__init__(
+            self._rollout.model, V_goal=self._V_goal, C_target=self._cpa,
+            K=self._K, scale=self._scale, rtg_scale=self._rtg_scale)
+
+    def _build_obs_array(self, historyPValueInfo, historyBid, historyAuctionResult,
+                         historyImpressionResult, historyLeastWinningCost):
+        """(n, 9) raw obs from the previous tick, POMDP training column order:
+        [pValue, pValueSigma, xi, adSlot, cost, isExposed, conversionAction,
+         bid, leastWinningCost].
+
+        AuctionNet history format (per advertiser, last tick):
+          historyPValueInfo[-1]      : (n, 2)  [pValue, pValueSigma]
+          historyBid[-1]             : (n,)
+          historyAuctionResult[-1]   : (n, 3)  [xi, slot, cost]   (cost raw, 未曝光不清零)
+          historyImpressionResult[-1]: (n, 2)  [isExposed, conversionAction]
+          historyLeastWinningCost[-1]: (n,)    market-level lwc
+        """
+        if not historyAuctionResult:
+            return np.zeros((1, self._obs_dim), dtype=np.float32)
+        pvi = np.asarray(historyPValueInfo[-1],       dtype=np.float32)
+        auc = np.asarray(historyAuctionResult[-1],    dtype=np.float32)
+        imp = np.asarray(historyImpressionResult[-1], dtype=np.float32)
+        n = auc.shape[0]
+        bid = (np.asarray(historyBid[-1], dtype=np.float32).reshape(-1)
+               if historyBid else np.zeros(n, dtype=np.float32))
+        lwc = (np.asarray(historyLeastWinningCost[-1], dtype=np.float32).reshape(-1)
+               if historyLeastWinningCost else np.zeros(n, dtype=np.float32))
+        obs = np.stack([pvi[:, 0], pvi[:, 1],                 # pValue, pValueSigma
+                        auc[:, 0], auc[:, 1], auc[:, 2],      # xi, adSlot, cost
+                        imp[:, 0], imp[:, 1],                 # isExposed, conversionAction
+                        bid, lwc], axis=1)
+        return obs.astype(np.float32)
+
+    def _build_state(self, timeStepIndex, obs):
+        """base state = norm(rl) [+ norm(stat_t)]. stat_t uses the FULL obs
+        of the previous tick (not truncated to max_imp), matching training."""
+        num_steps = 48
+        rl = np.array([(num_steps - timeStepIndex) / num_steps,
+                       self.remaining_budget / (self._budget + EPS)],
+                      dtype=np.float32)
+        rl_norm = (rl - self._rl_mean) / self._rl_std
+        if not self._use_stat:
+            return rl_norm.astype(np.float32)
+
+        stat = _compute_stat_single_po(obs)
+        stat[14] = stat[1] - self._prev_stat[1]     # Δpv_mean
+        stat[15] = stat[6] - self._prev_stat[6]     # Δwin_rate
+        self._prev_stat = stat.copy()               # raw copy, before log1p
+        if self._log1p_stat_dims:
+            for d in self._sparse_stat_dims:
+                stat[d] = np.log1p(stat[d] * self._log1p_scale)
+        stat_norm = (stat - self._stat_mean) / self._stat_std
+        return np.concatenate([rl_norm, stat_norm]).astype(np.float32)
+
+    def _build_obs_padded(self, obs):
+        """Pad/truncate obs to (max_imp, obs_dim) for the obs encoder.
+        All-zero obs (t=0 placeholder) → all-pad step (mask全0), matching the
+        training-time zero-padding skip in DGABReplayBuffer."""
+        M, od = self._max_imp, self._obs_dim
+        obs_pad  = np.zeros((M, od), dtype=np.float32)
+        obs_mask = np.zeros(M,       dtype=np.float32)
+        if not (obs == 0).all():
+            n_use = min(obs.shape[0], M)
+            obs_pad[:n_use]  = obs[:n_use]
+            obs_mask[:n_use] = 1.0
+        return obs_pad, obs_mask
+
+    def bidding(self, timeStepIndex, pValues, pValueSigmas,
+                historyPValueInfo, historyBid,
+                historyAuctionResult, historyImpressionResult,
+                historyLeastWinningCost):
+        if timeStepIndex == 0:
+            self.reset()
+
+        obs = self._build_obs_array(
+            historyPValueInfo, historyBid, historyAuctionResult,
+            historyImpressionResult, historyLeastWinningCost)
+        state = self._build_state(timeStepIndex, obs)
+
+        # open-loop RTG decrement with last tick's realized (v, c)
+        if historyImpressionResult:
+            last_imp = np.asarray(historyImpressionResult[-1], dtype=np.float32)
+            last_auc = np.asarray(historyAuctionResult[-1],    dtype=np.float32)
+            v_prev = float(last_imp[:, 1].sum())                     # conversions
+            c_prev = float((last_auc[:, 2] * last_imp[:, 0]).sum())  # realized cost
+            self._rollout.update_rtg(v_prev, c_prev)
+
+        if self._obs_encoder_type != 'none':
+            obs_pad, obs_mask = self._build_obs_padded(obs)
+            alpha = float(np.asarray(
+                self._rollout.act(state, obs_padded=obs_pad, obs_mask=obs_mask)
+            ).reshape(-1)[0])
+        else:
+            alpha = float(np.asarray(self._rollout.act(state)).reshape(-1)[0])
+
+        return alpha * np.asarray(pValues, dtype=np.float64)
+
+
+# ──────────────────────────────────────────────
 # Decision Transformer Agent
 # ──────────────────────────────────────────────
 

@@ -265,7 +265,10 @@ def run_one_episode(controller, envs, pv_generator, tracker,
     controller.reset(episode=episode)
     if pvalue_mean_base is not None:
         pv_generator.pvalue_mean_base = pvalue_mean_base
-        pv_generator.pv_values, pv_generator.PValueSigmas = pv_generator.generate()
+        # NOTE: must assign lowercase pValueSigmas (the attribute the tick loop
+        # reads); assigning capital PValueSigmas left sigmas stale at the
+        # 0.0005-base values for swept pv levels.
+        pv_generator.pv_values, pv_generator.pValueSigmas = pv_generator.generate()
     total_pv_num = 0
 
     for tick_index in range(num_tick):
