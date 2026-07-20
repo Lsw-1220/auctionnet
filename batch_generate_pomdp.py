@@ -25,6 +25,9 @@ def main():
     parser.add_argument("--end", type=int, required=True)
     parser.add_argument("--pv_num", type=int, default=500000)
     parser.add_argument("--generator", type=str, default="neuripsPvGen")
+    parser.add_argument("--pvalue_mean_base", type=float, default=None,
+                        help="Override NeurIPSPvGen pvalue_mean_base "
+                             "(default: keep 0.0005 = training density)")
     parser.add_argument("--output_dir", type=str, default="data/POMDP")
     parser.add_argument("--config", type=str, default="./config/test.gin")
     parser.add_argument("--keep_raw", action="store_true",
@@ -54,6 +57,7 @@ def main():
                 generator_type=args.generator,
                 output_dir=raw_dir,
                 budget_perturb=0.08,
+                pvalue_mean_base=args.pvalue_mean_base,
             )
             csv_path = os.path.join(raw_dir, f"period-{period:05d}.csv")
 

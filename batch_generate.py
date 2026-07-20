@@ -48,6 +48,9 @@ def parse_args():
                         help="Output directory for CSV files")
     parser.add_argument("--budget_perturb", type=float, default=0.08,
                         help="Per-period budget perturbation ratio (0=disabled)")
+    parser.add_argument("--pvalue_mean_base", type=float, default=None,
+                        help="Override NeurIPSPvGen pvalue_mean_base (default: keep 0.0005). "
+                             "Only applies to neuripsPvGen periods; ignored for modelPvGen.")
     parser.add_argument("--config", type=str, default="./config/test.gin",
                         help="Path to gin config file")
     parser.add_argument("--dry_run", action="store_true",
@@ -55,7 +58,8 @@ def parse_args():
     return parser.parse_args()
 
 
-def run_single_period(period_index, pv_num, generator_type, output_dir, budget_perturb):
+def run_single_period(period_index, pv_num, generator_type, output_dir, budget_perturb,
+                      pvalue_mean_base=None):
     """Run a single period of bidding simulation with all 48 agents randomly assigned strategies."""
     from simul_bidding_env.Tracker.BiddingTracker import BiddingTracker
     from simul_bidding_env.Environment.BiddingEnv import BiddingEnv
@@ -94,6 +98,17 @@ def run_single_period(period_index, pv_num, generator_type, output_dir, budget_p
             num_tick=num_tick, num_agent_category=num_agent_category,
             select_category=select_category, pv_num=pv_num,
             episodic_std=0.1, episode=period_index)
+
+    # ── Optional PV density override (NeurIPSPvGen only) ────────
+    if pvalue_mean_base is not None:
+        if gen_type == "neuripsPvGen":
+            pv_generator.pvalue_mean_base = pvalue_mean_base
+            # Regenerate values AND sigmas (lowercase pValueSigmas is the
+            # attribute consumed by the tick loop).
+            pv_generator.pv_values, pv_generator.pValueSigmas = pv_generator.generate()
+        else:
+            logger.warning(f"Period {period_index:05d}: --pvalue_mean_base "
+                           f"ignored for generator {gen_type}")
 
     # ── Budget / CPA / Category assignment ──────────────────────
     BASE_BUDGETS = [
@@ -146,6 +161,7 @@ def run_single_period(period_index, pv_num, generator_type, output_dir, budget_p
 
     logger.info(f"Period {period_index:05d}: world={world_type}, gen={gen_type}, "
                 f"pv_num={pv_generator.PV_NUM}, "
+                f"pv_base={getattr(pv_generator, 'pvalue_mean_base', 'model')}, "
                 f"min_budget={budgets.min():.0f}, max_budget={budgets.max():.0f}")
 
     # ── Run simulation ──────────────────────────────────────────
@@ -313,6 +329,7 @@ def main():
                 generator_type=args.generator,
                 output_dir=args.output_dir,
                 budget_perturb=args.budget_perturb,
+                pvalue_mean_base=args.pvalue_mean_base,
             )
             results.append(result)
         except Exception as e:
