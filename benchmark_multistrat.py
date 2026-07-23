@@ -390,7 +390,7 @@ def main():
                 res['advertiser'] = adv
                 results.append(res)
 
-                if done % 50 == 0 or done == total:
+                if True:  # log every episode
                     logger.info(f'  [{done}/{total}] {name} adv={adv} pv={pv_val:.4f} '
                                 f'score={res["score"]:.1f} reward={res["reward"]} '
                                 f'cpa={res["cpa_real"]:.2f} ({elapsed:.1f}s)')

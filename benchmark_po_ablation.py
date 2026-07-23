@@ -72,7 +72,12 @@ PO_CONFIGS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5']
 
 def make_po_agent(cfg, budget, cpa, category, args):
     from simul_bidding_env.strategy.autobidding_agents import DGABPOAuctionNetAgent
-    save_dir = os.path.join(args.model_root, f'dgab_po_{cfg}')
+    # Allow per-config path override (e.g. --r5_dir)
+    override_attr = f'{cfg}_dir'
+    if hasattr(args, override_attr) and getattr(args, override_attr):
+        save_dir = getattr(args, override_attr)
+    else:
+        save_dir = os.path.join(args.model_root, f'dgab_po_{cfg}')
     mp = dict(
         save_dir=save_dir,
         hidden_size=512, max_ep_len=96, time_dim=8,
@@ -282,6 +287,8 @@ def parse_args():
                          f'(default: all R0-R5)')
     ap.add_argument('--model_root', type=str, default=DEFAULT_MODEL_ROOT,
                     help='Dir containing dgab_po_r0 ... dgab_po_r5 checkpoints')
+    ap.add_argument('--r5_dir', type=str, default=None,
+                    help='Override path for r5 checkpoint (bypasses model_root/dgab_po_r5)')
     ap.add_argument('--fo_dir', type=str, default=DEFAULT_FO_DIR,
                     help='DGAB-FO checkpoint dir (for config "fo")')
     ap.add_argument('--episodes', type=int, default=1)
