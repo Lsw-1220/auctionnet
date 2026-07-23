@@ -17,7 +17,7 @@ class MbrlMopoBiddingStrategy(BaseBiddingStrategy):
         model_path = os.path.join(dir_name, "official_agent", "mbrl_mopo", "model", "policy_model", "best_policy.pt")
         dict_path = os.path.join(dir_name, "official_agent", "mbrl_mopo", "normalize_dict.pkl")
 
-        self.model = torch.jit.load(model_path)
+        self.model = torch.jit.load(model_path, map_location=torch.device('cpu'))
 
         with open(dict_path, 'rb') as file:
             self.normalize_dict = pickle.load(file)

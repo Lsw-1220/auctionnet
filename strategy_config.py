@@ -76,6 +76,10 @@ def _make_onlinelp(period_seed, **overrides):
     ep = overrides.get("onlinelp_episode", rng.integers(0, 7))
     return OnlineLpBiddingStrategy(episode=ep)
 
+def _make_guide(period_seed, **overrides):
+    from simul_bidding_env.strategy.guide_bidding_strategy import GUIDEStrategy
+    return GUIDEStrategy()
+
 
 # ── Strategy registry ───────────────────────────────────────────────
 
@@ -90,6 +94,7 @@ STRATEGY_REGISTRY = {
     "mbrl_m":  _make_mbrl_mopo,
     "mbrl_c":  _make_mbrl_combo,
     "onlinelp": _make_onlinelp,
+    "guide":   _make_guide,
 }
 
 

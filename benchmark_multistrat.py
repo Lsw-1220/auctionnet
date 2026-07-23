@@ -1,8 +1,8 @@
 r"""
-Multi-strategy online benchmark: PID / IQL / DT / GAVE / DGAB across pvalue_mean_base levels.
+Multi-strategy online benchmark: PID / IQL / DT / GAVE / DGAB / GUIDE across pvalue_mean_base levels.
 
 Usage:
-    # Full run (8 pv x 48 adv x 5 strategies = 1920 episodes)
+    # Full run (8 pv x 48 adv x 6 strategies = 2304 episodes)
     python benchmark_multistrat.py
 
     # Quick test: 1 pv, 1 advertiser
@@ -14,6 +14,7 @@ Usage:
         --dgab_dir /data/models/dgab_v3 \
         --dt_dir   /data/models/DTdense \
         --iql_dir  /data/models/IQL_4gpu \
+        --guide_dir /data/models/GUIDE \
         --output_dir /data/results \
         --output my_test
 
@@ -61,10 +62,11 @@ BLOCK_CONFIG = {
 }
 
 GAVE_SAVE_DIR = './saved_model/gave_20k_dense'
-DGAB_SAVE_DIR = './saved_model/dgab_v3'
-DT_SAVE_DIR   = './saved_model/DTdense'
-IQL_SAVE_DIR  = './strategy_train_env/saved_model/IQL_4gpu'
-OUTPUT_DIR    = None  # None → use {_PROJECT_ROOT}/exp_data
+DGAB_SAVE_DIR   = './saved_model/dgab_v3'
+DT_SAVE_DIR     = './saved_model/DTdense'
+IQL_SAVE_DIR    = './strategy_train_env/saved_model/IQL_4gpu'
+GUIDE_SAVE_DIR  = './strategy_train_env/saved_model/GUIDE'
+OUTPUT_DIR      = None  # None → use {_PROJECT_ROOT}/exp_data
 
 NUM_ADVERTISERS = 48
 NUM_TICK = 48
@@ -100,6 +102,8 @@ def parse_args():
                     help='DT model directory')
     ap.add_argument('--iql_dir', type=str, default=None,
                     help='IQL model directory')
+    ap.add_argument('--guide_dir', type=str, default=None,
+                    help='GUIDE model directory')
     return ap.parse_args()
 
 
@@ -170,12 +174,23 @@ def make_dgab(budget, cpa, category, pvalue_mean_base=None, **kw):
     )
 
 
+def make_guide(budget, cpa, category, **kw):
+    from simul_bidding_env.strategy.guide_bidding_strategy import GUIDEStrategy
+    return GUIDEStrategy(
+        budget=budget, cpa=cpa, category=category,
+        name='GUIDE-Player',
+        model_dir=GUIDE_SAVE_DIR,
+        device=DEVICE,
+    )
+
+
 STRATEGIES = [
-    ('PID',  make_pid),
-    ('IQL',  make_iql),
-    ('DT',   make_dt),
-    ('GAVE', make_gave),
-    ('DGAB', make_dgab),
+    ('PID',   make_pid),
+    ('IQL',   make_iql),
+    ('DT',    make_dt),
+    ('GAVE',  make_gave),
+    ('DGAB',  make_dgab),
+    ('GUIDE', make_guide),
 ]
 
 
@@ -310,7 +325,7 @@ def run_one_episode(controller, player_index, agent_factory, pvalue_mean_base):
 # ═══════════════════════════════════════════════
 
 def main():
-    global DEVICE, GAVE_SAVE_DIR, DGAB_SAVE_DIR, DT_SAVE_DIR, IQL_SAVE_DIR, OUTPUT_DIR
+    global DEVICE, GAVE_SAVE_DIR, DGAB_SAVE_DIR, DT_SAVE_DIR, IQL_SAVE_DIR, GUIDE_SAVE_DIR, OUTPUT_DIR
 
     args = parse_args()
 
@@ -324,7 +339,8 @@ def main():
     if args.gave_dir:   GAVE_SAVE_DIR = args.gave_dir
     if args.dgab_dir:   DGAB_SAVE_DIR = args.dgab_dir
     if args.dt_dir:     DT_SAVE_DIR   = args.dt_dir
-    if args.iql_dir:    IQL_SAVE_DIR  = args.iql_dir
+    if args.iql_dir:    IQL_SAVE_DIR    = args.iql_dir
+    if args.guide_dir:  GUIDE_SAVE_DIR  = args.guide_dir
     OUTPUT_DIR = args.output_dir  # None → use default below
 
     np.random.seed(seed)
@@ -336,7 +352,7 @@ def main():
     logger.info(f'Advertisers ({len(advertisers)}): {advertisers if len(advertisers) <= 10 else f"{advertisers[:5]}...{advertisers[-2:]}" }')
     logger.info(f'Strategies: {[n for n, _ in STRATEGIES]}')
     logger.info(f'Total episodes: {len(pv_sweep) * len(advertisers) * len(STRATEGIES)}')
-    logger.info(f'Model dirs — GAVE: {GAVE_SAVE_DIR}  DGAB: {DGAB_SAVE_DIR}  DT: {DT_SAVE_DIR}  IQL: {IQL_SAVE_DIR}')
+    logger.info(f'Model dirs — GAVE: {GAVE_SAVE_DIR}  DGAB: {DGAB_SAVE_DIR}  DT: {DT_SAVE_DIR}  IQL: {IQL_SAVE_DIR}  GUIDE: {GUIDE_SAVE_DIR}')
 
     from simul_bidding_env.strategy.pid_bidding_strategy import PidBiddingStrategy
     dummy_agent = PidBiddingStrategy(exp_tempral_ratio=np.ones(48))

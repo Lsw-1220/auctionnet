@@ -11,7 +11,8 @@ np.random.seed(1)
 random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(seed)
 
 
 class TD3_BCBiddingStrategy(BaseBiddingStrategy):
@@ -26,7 +27,7 @@ class TD3_BCBiddingStrategy(BaseBiddingStrategy):
         dir_name = file_name
         model_path = os.path.join(dir_name, "official_agent", "TD3_bctest", "td3_bc_model.pth")
         dict_path = os.path.join(dir_name, "official_agent", "TD3_bctest", "normalize_dict.pkl")
-        self.model = torch.jit.load(model_path)
+        self.model = torch.jit.load(model_path, map_location=torch.device('cpu'))
         with open(dict_path, 'rb') as file:
             self.normalize_dict = pickle.load(file)
 

@@ -65,6 +65,7 @@ BLOCK_CONFIG = {
 GAVE_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/gave_20k_dense'
 DGAB_SAVE_DIR = 'D:/research/Experiment/autobidding/saved_model/dgab_v3_20260701062347'
 DT_SAVE_DIR = './saved_model/DTtest'
+GUIDE_SAVE_DIR = os.path.join(_PROJECT_ROOT, 'strategy_train_env', 'saved_model', 'GUIDE')
 
 DEVICE = 'cuda:0' if __import__('torch').cuda.is_available() else 'cpu'
 NUM_EPISODE = 1          # number of episodes to run per agent
@@ -212,6 +213,16 @@ def make_onlinelp_agent(budget, cpa, category):
     return OnlineLpBiddingStrategy(budget=budget, cpa=cpa, category=category, name='OnlineLP', episode=0)
 
 
+def make_guide_agent(budget, cpa, category):
+    """GUIDE (Generative Unified Bidding with IDM + Critic)."""
+    from simul_bidding_env.strategy.guide_bidding_strategy import GUIDEStrategy
+    return GUIDEStrategy(
+        budget=budget, cpa=cpa, category=category,
+        name='GUIDE-Player',
+        model_dir=GUIDE_SAVE_DIR,
+    )
+
+
 # ── All strategies for comparison ──
 # ALL_AGENTS = [
 #     # User's custom strategies
@@ -232,8 +243,8 @@ def make_onlinelp_agent(budget, cpa, category):
 #('DT',        make_dt_agent)
 # ]
 ALL_AGENTS = [
-    ('GAVE',        make_gave_agent),
-     ('DGAB-FO',     make_dgab_agent)
+    ('DGAB-FO',     make_dgab_agent),
+    ('GUIDE',       make_guide_agent)
 ]
 
 # ═══════════════════════════════════════════════

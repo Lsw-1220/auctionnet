@@ -19,7 +19,7 @@ class BcBiddingStrategy(BaseBiddingStrategy):
         model_path = os.path.join(dir_name, "official_agent", "BCtest", "bc_model.pth")
         dict_path = os.path.join(dir_name, "official_agent", "BCtest", "normalize_dict.pkl")
 
-        self.model = torch.jit.load(model_path)
+        self.model = torch.jit.load(model_path, map_location=torch.device('cpu'))
 
         with open(dict_path, 'rb') as f:
             self.normalize_dict = pickle.load(f)

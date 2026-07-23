@@ -18,7 +18,7 @@ class MbrlComboMicroBiddingStrategy(BaseBiddingStrategy):
                                   "best_policy.pt")
         dict_path = os.path.join(dir_name, "official_agent", "mbrl_combomicro", "normalize_dict.pkl")
 
-        self.model = torch.jit.load(model_path)
+        self.model = torch.jit.load(model_path, map_location=torch.device('cpu'))
         with open(dict_path, 'rb') as file:
             self.normalize_dict = pickle.load(file)
 
