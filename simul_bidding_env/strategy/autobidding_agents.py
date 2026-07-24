@@ -961,3 +961,275 @@ class DTAuctionNetAgent(AuctionNetBase):
         ).reshape(-1)[0])
 
         return alpha * np.asarray(pValues, dtype=np.float64)
+
+
+# ──────────────────────────────────────────────
+# DGAB-PO Ensemble Agent (R2 + R5 sparsity-gated)
+# ──────────────────────────────────────────────
+
+class DGABEnsembleAuctionNetAgent(AuctionNetBase):
+    """Sparsity-gated ensemble: R2 (dense, cls-token) + R5 (sparse, BidFormer).
+
+    At each timestep, computes sparsity = z-scored log(n_imp+1) from the
+    previous tick's obs.  Below threshold → R5 (sparse expert), otherwise → R2
+    (dense expert).  Both rollouts' RTGs are synchronized with actual feedback.
+
+    model_param keys:
+        dense_model   : dict with save_dir for R2 checkpoint
+        sparse_model  : dict with save_dir for R5 checkpoint
+        sparsity_threshold : float (default 0.0) — z-scored log(n_imp+1) boundary
+        hidden_size   : int (default 512)
+        max_ep_len    : int (default 96)
+        time_dim      : int (default 8)
+        block_config  : dict (required)
+        device        : str (default 'cpu')
+        K             : int (default 20)
+        max_imp       : int (default 512)
+        rtg_v_cap     : float (default None)
+    """
+
+    def __init__(self, budget=100, name="DGAB-Ensemble-AuctionNet", cpa=2, category=1,
+                 model_param=None):
+        super().__init__(budget=budget, name=name, cpa=cpa, category=category)
+        if model_param is None:
+            model_param = {}
+
+        device = model_param.get('device', 'cpu')
+
+        import torch
+        import pickle
+        from bidding_train_env.baseline.dgab.model_po import DGAB, DGABRollout
+
+        self._device    = device
+        self._budget    = budget
+        self._cpa       = cpa
+        self._K         = model_param.get('K', 20)
+        self._max_imp   = int(model_param.get('max_imp', 512))
+
+        self._sparsity_threshold = model_param.get('sparsity_threshold', 0.0)
+
+        # ── Load dense expert (R2: cls-token, no stat) ──
+        dense_cfg = model_param['dense_model']
+        dense_nd_path = os.path.join(dense_cfg['save_dir'], 'normalize_dict.pkl')
+        with open(dense_nd_path, 'rb') as f:
+            dense_nd = pickle.load(f)
+        self._dense_rl_mean = np.asarray(dense_nd['resourceleft_mean'], dtype=np.float32)
+        self._dense_rl_std  = np.asarray(dense_nd['resourceleft_std'],  dtype=np.float32)
+        dense_base_state_dim = int(dense_nd.get('base_state_dim', _RL_DIM_PO))
+        dense_actor_type     = dense_nd.get('actor_type', 'stack')
+        dense_critic_type    = dense_nd.get('critic_type', 'sequence')
+        dense_obs_enc        = dense_nd.get('obs_encoder_type', 'cls')
+        dense_obs_dim        = int(dense_nd.get('obs_dim', _OBS_DIM_PO))
+        dense_scale          = int(dense_nd.get('scale', 2000))
+        dense_rtg_scale      = float(dense_nd.get('rtg_scale', dense_scale))
+
+        dense_model = DGAB(
+            base_state_dim=dense_base_state_dim, act_dim=1,
+            hidden_size=model_param.get('hidden_size', 512),
+            max_ep_len=model_param.get('max_ep_len', 96),
+            time_dim=model_param.get('time_dim', 8),
+            block_config=model_param['block_config'],
+            actor_type=dense_actor_type,
+            critic_type=dense_critic_type,
+            obs_encoder_type=dense_obs_enc,
+            obs_dim=dense_obs_dim,
+            macro_dim=_RL_DIM_PO,
+            device=device,
+        )
+        dense_ckpt = os.path.join(dense_cfg['save_dir'],
+                                  dense_cfg.get('ckpt_name', 'complete_train.pt'))
+        dense_model.load_state_dict(torch.load(dense_ckpt, map_location=device))
+        dense_model.to(device)
+        dense_model.eval()
+
+        V_goal = budget / (cpa + EPS)
+        rtg_v_cap = model_param.get('rtg_v_cap', None)
+        if rtg_v_cap is not None:
+            V_goal = min(V_goal, float(rtg_v_cap))
+
+        self._rollout_dense = DGABRollout(
+            dense_model, V_goal=V_goal, C_target=cpa,
+            K=self._K, scale=dense_scale, rtg_scale=dense_rtg_scale)
+
+        logger.info(f'[DGAB-Ensemble] DENSE (R2): {os.path.basename(str(dense_cfg["save_dir"]))} '
+                    f'base_state_dim={dense_base_state_dim} actor={dense_actor_type} '
+                    f'obs_enc={dense_obs_enc}')
+
+        # ── Load sparse expert (R5: BidFormer + stat_t) ──
+        sparse_cfg = model_param['sparse_model']
+        sparse_nd_path = os.path.join(sparse_cfg['save_dir'], 'normalize_dict.pkl')
+        with open(sparse_nd_path, 'rb') as f:
+            sparse_nd = pickle.load(f)
+        self._sparse_rl_mean   = np.asarray(sparse_nd['resourceleft_mean'], dtype=np.float32)
+        self._sparse_rl_std    = np.asarray(sparse_nd['resourceleft_std'],  dtype=np.float32)
+        self._sparse_stat_mean = np.asarray(sparse_nd.get('stat_mean', np.zeros(_STAT_DIM_PO)),
+                                            dtype=np.float32)
+        self._sparse_stat_std  = np.asarray(sparse_nd.get('stat_std', np.ones(_STAT_DIM_PO)),
+                                            dtype=np.float32)
+        sparse_base_state_dim = int(sparse_nd.get('base_state_dim', _RL_DIM_PO + _STAT_DIM_PO))
+        sparse_actor_type     = sparse_nd.get('actor_type', 'cross_attn')
+        sparse_critic_type    = sparse_nd.get('critic_type', 'sequence')
+        sparse_obs_enc        = sparse_nd.get('obs_encoder_type', 'bidformer')
+        sparse_obs_dim        = int(sparse_nd.get('obs_dim', _OBS_DIM_PO))
+        sparse_scale          = int(sparse_nd.get('scale', 2000))
+        sparse_rtg_scale      = float(sparse_nd.get('rtg_scale', sparse_scale))
+
+        # Log1p on sparse stat dims
+        self._sparse_log1p_stat_dims  = bool(sparse_nd.get('log1p_stat_dims', False))
+        self._sparse_sparse_stat_dims = list(sparse_nd.get('sparse_stat_dims', []))
+        self._sparse_log1p_scale      = float(sparse_nd.get('log1p_scale', 1000.0))
+
+        sparse_model = DGAB(
+            base_state_dim=sparse_base_state_dim, act_dim=1,
+            hidden_size=model_param.get('hidden_size', 512),
+            max_ep_len=model_param.get('max_ep_len', 96),
+            time_dim=model_param.get('time_dim', 8),
+            block_config=model_param['block_config'],
+            actor_type=sparse_actor_type,
+            critic_type=sparse_critic_type,
+            obs_encoder_type=sparse_obs_enc,
+            obs_dim=sparse_obs_dim,
+            macro_dim=_RL_DIM_PO,
+            device=device,
+        )
+        sparse_ckpt = os.path.join(sparse_cfg['save_dir'],
+                                   sparse_cfg.get('ckpt_name', 'complete_train.pt'))
+        sparse_model.load_state_dict(torch.load(sparse_ckpt, map_location=device))
+        sparse_model.to(device)
+        sparse_model.eval()
+
+        self._rollout_sparse = DGABRollout(
+            sparse_model, V_goal=V_goal, C_target=cpa,
+            K=self._K, scale=sparse_scale, rtg_scale=sparse_rtg_scale)
+
+        # Shared obs_dim (should be 9 for both)
+        self._obs_dim = max(dense_obs_dim, sparse_obs_dim)
+
+        logger.info(f'[DGAB-Ensemble] SPARSE (R5): {os.path.basename(str(sparse_cfg["save_dir"]))} '
+                    f'base_state_dim={sparse_base_state_dim} actor={sparse_actor_type} '
+                    f'obs_enc={sparse_obs_enc}')
+        logger.info(f'[DGAB-Ensemble] sparsity_threshold={self._sparsity_threshold:.2f} '
+                    f'V_goal={V_goal:.1f}')
+
+        # State tracking
+        self._prev_stat = np.zeros(_STAT_DIM_PO, dtype=np.float32)
+        self._last_choice = None
+
+    def reset(self):
+        self.remaining_budget = self.budget
+        self._prev_stat = np.zeros(_STAT_DIM_PO, dtype=np.float32)
+        self._last_choice = None
+        V_goal = self._budget / (self._cpa + EPS)
+        self._rollout_dense.__init__(
+            self._rollout_dense.model, V_goal=V_goal, C_target=self._cpa,
+            K=self._K, scale=self._rollout_dense.scale,
+            rtg_scale=self._rollout_dense.rtg_scale)
+        self._rollout_sparse.__init__(
+            self._rollout_sparse.model, V_goal=V_goal, C_target=self._cpa,
+            K=self._K, scale=self._rollout_sparse.scale,
+            rtg_scale=self._rollout_sparse.rtg_scale)
+
+    def _build_obs_array(self, historyPValueInfo, historyBid, historyAuctionResult,
+                         historyImpressionResult, historyLeastWinningCost):
+        """(n, 9) raw obs from the previous tick, same as DGABPOAuctionNetAgent."""
+        if not historyAuctionResult:
+            return np.zeros((1, self._obs_dim), dtype=np.float32)
+        pvi = np.asarray(historyPValueInfo[-1],       dtype=np.float32)
+        auc = np.asarray(historyAuctionResult[-1],    dtype=np.float32)
+        imp = np.asarray(historyImpressionResult[-1], dtype=np.float32)
+        n = auc.shape[0]
+        bid = (np.asarray(historyBid[-1], dtype=np.float32).reshape(-1)
+               if historyBid else np.zeros(n, dtype=np.float32))
+        lwc = (np.asarray(historyLeastWinningCost[-1], dtype=np.float32).reshape(-1)
+               if historyLeastWinningCost else np.zeros(n, dtype=np.float32))
+        obs = np.stack([pvi[:, 0], pvi[:, 1],                 # pValue, pValueSigma
+                        auc[:, 0], auc[:, 1], auc[:, 2],      # xi, adSlot, cost
+                        imp[:, 0], imp[:, 1],                 # isExposed, conversionAction
+                        bid, lwc], axis=1)
+        return obs.astype(np.float32)
+
+    def _compute_sparsity(self, obs):
+        """z-scored log(n_imp+1) using R5's stat normalization."""
+        n = obs.shape[0]
+        raw_log_n_imp = np.log(n + 1.0)
+        return (raw_log_n_imp - self._sparse_stat_mean[0]) / self._sparse_stat_std[0]
+
+    def _build_state_dense(self, timeStepIndex):
+        """R2 base state: (2,) = norm(rl)."""
+        num_steps = 48
+        rl = np.array([(num_steps - timeStepIndex) / num_steps,
+                       self.remaining_budget / (self._budget + EPS)],
+                      dtype=np.float32)
+        rl_norm = (rl - self._dense_rl_mean) / self._dense_rl_std
+        return rl_norm.astype(np.float32)
+
+    def _build_state_sparse(self, timeStepIndex, obs):
+        """R5 base state: (18,) = [norm(rl) | norm(stat)]."""
+        num_steps = 48
+        rl = np.array([(num_steps - timeStepIndex) / num_steps,
+                       self.remaining_budget / (self._budget + EPS)],
+                      dtype=np.float32)
+        rl_norm = (rl - self._sparse_rl_mean) / self._sparse_rl_std
+
+        stat = _compute_stat_single_po(obs)
+        stat[14] = stat[1] - self._prev_stat[1]     # Δpv_mean
+        stat[15] = stat[6] - self._prev_stat[6]     # Δwin_rate
+        self._prev_stat = stat.copy()
+        if self._sparse_log1p_stat_dims:
+            for d in self._sparse_sparse_stat_dims:
+                stat[d] = np.log1p(stat[d] * self._sparse_log1p_scale)
+        stat_norm = (stat - self._sparse_stat_mean) / self._sparse_stat_std
+        return np.concatenate([rl_norm, stat_norm]).astype(np.float32)
+
+    def _build_obs_padded(self, obs):
+        """Pad/truncate obs to (max_imp, obs_dim)."""
+        M, od = self._max_imp, self._obs_dim
+        obs_pad  = np.zeros((M, od), dtype=np.float32)
+        obs_mask = np.zeros(M,       dtype=np.float32)
+        if not (obs == 0).all():
+            n_use = min(obs.shape[0], M)
+            obs_pad[:n_use]  = obs[:n_use]
+            obs_mask[:n_use] = 1.0
+        return obs_pad, obs_mask
+
+    def bidding(self, timeStepIndex, pValues, pValueSigmas,
+                historyPValueInfo, historyBid,
+                historyAuctionResult, historyImpressionResult,
+                historyLeastWinningCost):
+        if timeStepIndex == 0:
+            self.reset()
+
+        # Build obs and compute sparsity
+        obs = self._build_obs_array(
+            historyPValueInfo, historyBid, historyAuctionResult,
+            historyImpressionResult, historyLeastWinningCost)
+        sparsity = self._compute_sparsity(obs)
+
+        # Route: sparse → R5, dense → R2
+        use_sparse = sparsity < self._sparsity_threshold
+        self._last_choice = 'sparse' if use_sparse else 'dense'
+
+        # Build padded obs (both models have obs encoders)
+        obs_pad, obs_mask = self._build_obs_padded(obs)
+
+        if use_sparse:
+            state = self._build_state_sparse(timeStepIndex, obs)
+            alpha = float(np.asarray(
+                self._rollout_sparse.act(state, obs_padded=obs_pad, obs_mask=obs_mask)
+            ).reshape(-1)[0])
+        else:
+            state = self._build_state_dense(timeStepIndex)
+            alpha = float(np.asarray(
+                self._rollout_dense.act(state, obs_padded=obs_pad, obs_mask=obs_mask)
+            ).reshape(-1)[0])
+
+        # Synchronize both RTGs with actual environment feedback
+        if historyImpressionResult:
+            last_imp = np.asarray(historyImpressionResult[-1], dtype=np.float32)
+            last_auc = np.asarray(historyAuctionResult[-1],    dtype=np.float32)
+            v_prev = float(last_imp[:, 1].sum())
+            c_prev = float((last_auc[:, 2] * last_imp[:, 0]).sum())
+            self._rollout_dense.update_rtg(v_prev, c_prev)
+            self._rollout_sparse.update_rtg(v_prev, c_prev)
+
+        return alpha * np.asarray(pValues, dtype=np.float64)

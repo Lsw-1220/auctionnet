@@ -16,15 +16,18 @@ Ablation matrix (config is self-described by each checkpoint's normalize_dict.pk
     r4 : rl + stat_t         + cross-attn DT  (base_state=18)   只动结构(RTG做query)
     r5 : rl + stat_t + bidformer + cross-attn (base_state=18+H) 完整方案
 Optional reference anchors: pid (classical), fo (DGAB-FO, 完全可观测上参照).
+r2r5 (ensemble): R2 (dense, cls) + R5 (sparse, bidformer) 稀疏度自适应.
 
 Usage:
     python benchmark_po_ablation.py
     python benchmark_po_ablation.py --configs r0,r1,r4 --episodes 2
-    python benchmark_po_ablation.py --configs r0,r1,r2,r3,r4,r5,pid,fo \
+    python benchmark_po_ablation.py --configs r2,r5,r2r5 --pv 0.0003 0.001 0.005 0.007
+    python benchmark_po_ablation.py --configs r0,r1,r2,r3,r4,r5,r2r5,pid,fo \
         --pv 0.0005 0.001 --device cuda:0
     python benchmark_po_ablation.py --player all         # 循环全部 48 个广告主
     python benchmark_po_ablation.py --player 0,4,24      # 指定广告主子集
     python benchmark_po_ablation.py --model_root D:/path/to/saved_model
+    python benchmark_po_ablation.py --configs r2r5 --sparsity_threshold -0.5
 """
 import sys, os, time, argparse, logging
 import numpy as np
@@ -64,6 +67,7 @@ DEFAULT_MODEL_ROOT = 'D:/research/Experiment/autobidding/saved_model'
 DEFAULT_FO_DIR     = 'D:/research/Experiment/autobidding/saved_model/dgab_v3_20260701062347'
 
 PO_CONFIGS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5']
+ENSEMBLE_CONFIGS = ['r2r5']
 
 
 # ═══════════════════════════════════════════════
@@ -117,9 +121,39 @@ def make_pid_agent(budget, cpa, category, args):
                               name='PID', exp_tempral_ratio=np.ones(48))
 
 
+def make_ensemble_agent(budget, cpa, category, args):
+    """R2 (dense, cls-token) + R5 (sparse, BidFormer) sparsity-gated ensemble."""
+    from simul_bidding_env.strategy.autobidding_agents import DGABEnsembleAuctionNetAgent
+    mp = dict(
+        hidden_size=512, max_ep_len=96, time_dim=8,
+        block_config=BLOCK_CONFIG,
+        device=args.device,
+        K=20,
+        max_imp=args.max_imp,
+        dense_model=dict(
+            save_dir=os.path.join(args.model_root, 'dgab_po_r2'),
+        ),
+        sparse_model=dict(
+            save_dir=os.path.join(args.model_root, 'dgab_po_r5'),
+        ),
+        sparsity_threshold=getattr(args, 'sparsity_threshold', 0.0),
+    )
+    if args.rtg_v_cap is not None:
+        mp['rtg_v_cap'] = args.rtg_v_cap
+    if hasattr(args, 'r2_dir') and args.r2_dir:
+        mp['dense_model']['save_dir'] = args.r2_dir
+    if hasattr(args, 'r5_dir') and args.r5_dir:
+        mp['sparse_model']['save_dir'] = args.r5_dir
+    return DGABEnsembleAuctionNetAgent(
+        budget=budget, cpa=cpa, category=category,
+        name='DGAB-Ensemble-R2R5', model_param=mp)
+
+
 def build_agent(cfg, budget, cpa, category, args):
     if cfg in PO_CONFIGS:
         return make_po_agent(cfg, budget, cpa, category, args)
+    elif cfg in ENSEMBLE_CONFIGS:
+        return make_ensemble_agent(budget, cpa, category, args)
     elif cfg == 'fo':
         return make_fo_agent(budget, cpa, category, args)
     elif cfg == 'pid':
@@ -289,6 +323,11 @@ def parse_args():
                     help='Dir containing dgab_po_r0 ... dgab_po_r5 checkpoints')
     ap.add_argument('--r5_dir', type=str, default=None,
                     help='Override path for r5 checkpoint (bypasses model_root/dgab_po_r5)')
+    ap.add_argument('--r2_dir', type=str, default=None,
+                    help='Override path for r2 checkpoint (for r2r5 ensemble)')
+    ap.add_argument('--sparsity_threshold', type=float, default=0.0,
+                    help='Sparsity threshold for r2r5 ensemble: z-scored log(n_imp+1) '
+                         'below which -> R5 (sparse). Default 0.0 = training mean')
     ap.add_argument('--fo_dir', type=str, default=DEFAULT_FO_DIR,
                     help='DGAB-FO checkpoint dir (for config "fo")')
     ap.add_argument('--episodes', type=int, default=1)
@@ -319,10 +358,11 @@ def main():
     import pandas as pd
 
     args.device = args.device or ('cuda:0' if torch.cuda.is_available() else 'cpu')
+    ALL_CONFIGS = PO_CONFIGS + ENSEMBLE_CONFIGS + ['pid', 'fo']
     configs = [c.strip().lower() for c in args.configs.split(',') if c.strip()]
     for c in configs:
-        if c not in PO_CONFIGS + ['pid', 'fo']:
-            raise SystemExit(f'Unknown config "{c}" (choose from {PO_CONFIGS + ["pid", "fo"]})')
+        if c not in ALL_CONFIGS:
+            raise SystemExit(f'Unknown config "{c}" (choose from {ALL_CONFIGS})')
 
     # ── Resolve player advertiser list ──
     num_agent_total = 48   # gin: NUM_CATERORY(6) × NUM_AGENT_CATERORY(8)
