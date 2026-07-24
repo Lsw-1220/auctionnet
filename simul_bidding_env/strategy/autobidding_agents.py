@@ -1149,10 +1149,19 @@ class DGABEnsembleAuctionNetAgent(AuctionNetBase):
         return obs.astype(np.float32)
 
     def _compute_sparsity(self, obs):
-        """z-scored log(n_imp+1) using R5's stat normalization."""
+        """z-scored pv_mean using R5's stat normalization.
+
+        Uses pv_mean (stat[1]) rather than log(n_imp+1) (stat[0]) because
+        n_imp is roughly constant across pv_mean_base levels in AuctionNet
+        (controlled by pv_num, not pv_mean_base).  pv_mean directly reflects
+        value density: lower → sparser environment.
+        """
         n = obs.shape[0]
-        raw_log_n_imp = np.log(n + 1.0)
-        return (raw_log_n_imp - self._sparse_stat_mean[0]) / self._sparse_stat_std[0]
+        if n == 0 or (obs == 0).all():
+            return 0.0
+        pv = obs[:, 0]
+        raw_pv_mean = float(np.mean(pv))
+        return (raw_pv_mean - self._sparse_stat_mean[1]) / self._sparse_stat_std[1]
 
     def _build_state_dense(self, timeStepIndex):
         """R2 base state: (2,) = norm(rl)."""
