@@ -82,7 +82,6 @@ class BidFormerEncoder(nn.Module):
             for _ in range(n_layers)])
         self.ln_layers  = nn.ModuleList([nn.LayerNorm(hidden_size) for _ in range(n_layers)])
         self.out_ln     = nn.LayerNorm(hidden_size)
-        self.tanh_scale = 3.0  # soft bound: tanh(x/3)*3, ~identity near 0, capped at ±3
 
     def forward(self, obs_padded, obs_mask, macro):
         # three-domain impression embedding
@@ -107,9 +106,7 @@ class BidFormerEncoder(nn.Module):
             ctx = ctx + attn_out
             ctx = ctx + ffn(ctx)
 
-        ctx_out = self.out_ln(ctx[:, 0])                                 # [N, H]
-        s = self.tanh_scale
-        return s * torch.tanh(ctx_out / s)                               # soft-bounded
+        return self.out_ln(ctx[:, 0])                                 # [N, H]
 
 
 # =====================================================================
@@ -348,10 +345,7 @@ class DGABCrossAttnActor(nn.Module):
         # state residual
         self.state_proj = nn.Linear(state_dim, hidden_size)
 
-        # fused LayerNorm: 统一 qv/qc/state_proj 三个来源的方差，防止 OOD 时 Linear 发散
-        self.fused_ln = nn.LayerNorm(hidden_size * 3)
-
-        # prediction heads: 输入 = LN([attn^V ; attn^C ; s_res]) = 3H
+        # prediction heads: 输入 = [attn^V ; attn^C ; s_res] = 3H
         self.predict_action = nn.Linear(hidden_size * 3, act_dim)
         self.predict_beta   = nn.Sequential(
             nn.Linear(hidden_size * 3, 32), nn.GELU(),
@@ -402,7 +396,6 @@ class DGABCrossAttnActor(nn.Module):
 
         s_res = self.state_proj(states)
         fused = torch.cat([qv, qc, s_res], dim=-1)   # [B,T,3H]
-        fused = self.fused_ln(fused)                  # normalize before prediction
 
         action_pred = self.predict_action(fused)
         beta_pred   = self.predict_beta(fused) + 0.5
