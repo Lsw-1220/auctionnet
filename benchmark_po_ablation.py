@@ -66,7 +66,7 @@ BLOCK_CONFIG = {
 DEFAULT_MODEL_ROOT = 'D:/research/Experiment/autobidding/saved_model'
 DEFAULT_FO_DIR     = 'D:/research/Experiment/autobidding/saved_model/dgab_v3_20260701062347'
 
-PO_CONFIGS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5']
+PO_CONFIGS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6']
 ENSEMBLE_CONFIGS = ['r2r5']
 FUSION_CONFIGS = ['fusion']
 
