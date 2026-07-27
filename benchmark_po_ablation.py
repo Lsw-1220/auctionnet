@@ -68,6 +68,7 @@ DEFAULT_FO_DIR     = 'D:/research/Experiment/autobidding/saved_model/dgab_v3_202
 
 PO_CONFIGS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5']
 ENSEMBLE_CONFIGS = ['r2r5']
+FUSION_CONFIGS = ['fusion']
 
 
 # ═══════════════════════════════════════════════
@@ -149,11 +150,34 @@ def make_ensemble_agent(budget, cpa, category, args):
         name='DGAB-Ensemble-R2R5', model_param=mp)
 
 
+def make_fusion_agent(budget, cpa, category, args):
+    """DGAB-Fusion (Plan B): dual-encoder + heuristic gate."""
+    from simul_bidding_env.strategy.autobidding_agents import DGABFusionAuctionNetAgent
+    mp = dict(
+        hidden_size=512, max_ep_len=96, time_dim=8,
+        block_config=BLOCK_CONFIG,
+        device=args.device,
+        K=20,
+        max_imp=args.max_imp,
+        save_dir=os.path.join(args.model_root, 'DGAB_fusion'),
+        gate_temperature=getattr(args, 'gate_temperature', 1.0),
+    )
+    if args.rtg_v_cap is not None:
+        mp['rtg_v_cap'] = args.rtg_v_cap
+    if hasattr(args, 'fusion_dir') and args.fusion_dir:
+        mp['save_dir'] = args.fusion_dir
+    return DGABFusionAuctionNetAgent(
+        budget=budget, cpa=cpa, category=category,
+        name='DGAB-Fusion', model_param=mp)
+
+
 def build_agent(cfg, budget, cpa, category, args):
     if cfg in PO_CONFIGS:
         return make_po_agent(cfg, budget, cpa, category, args)
     elif cfg in ENSEMBLE_CONFIGS:
         return make_ensemble_agent(budget, cpa, category, args)
+    elif cfg in FUSION_CONFIGS:
+        return make_fusion_agent(budget, cpa, category, args)
     elif cfg == 'fo':
         return make_fo_agent(budget, cpa, category, args)
     elif cfg == 'pid':
@@ -326,8 +350,11 @@ def parse_args():
     ap.add_argument('--r2_dir', type=str, default=None,
                     help='Override path for r2 checkpoint (for r2r5 ensemble)')
     ap.add_argument('--sparsity_threshold', type=float, default=0.0,
-                    help='Sparsity threshold for r2r5 ensemble: z-scored log(n_imp+1) '
-                         'below which -> R5 (sparse). Default 0.0 = training mean')
+                    help='Sparsity threshold for r2r5 ensemble (default 0.0)')
+    ap.add_argument('--gate_temperature', type=float, default=1.0,
+                    help='Gate temperature for fusion config (default 1.0)')
+    ap.add_argument('--fusion_dir', type=str, default=None,
+                    help='Override path for DGAB-Fusion checkpoint')
     ap.add_argument('--fo_dir', type=str, default=DEFAULT_FO_DIR,
                     help='DGAB-FO checkpoint dir (for config "fo")')
     ap.add_argument('--episodes', type=int, default=1)
@@ -358,7 +385,7 @@ def main():
     import pandas as pd
 
     args.device = args.device or ('cuda:0' if torch.cuda.is_available() else 'cpu')
-    ALL_CONFIGS = PO_CONFIGS + ENSEMBLE_CONFIGS + ['pid', 'fo']
+    ALL_CONFIGS = PO_CONFIGS + ENSEMBLE_CONFIGS + FUSION_CONFIGS + ['pid', 'fo']
     configs = [c.strip().lower() for c in args.configs.split(',') if c.strip()]
     for c in configs:
         if c not in ALL_CONFIGS:

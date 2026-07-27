@@ -1242,3 +1242,178 @@ class DGABEnsembleAuctionNetAgent(AuctionNetBase):
             self._rollout_sparse.update_rtg(v_prev, c_prev)
 
         return alpha * np.asarray(pValues, dtype=np.float64)
+
+
+# ──────────────────────────────────────────────
+# DGAB-Fusion Agent (Plan B: dual-encoder + heuristic gate)
+# ──────────────────────────────────────────────
+
+class DGABFusionAuctionNetAgent(AuctionNetBase):
+    """DGAB-Fusion agent (Plan B) for AuctionNet online testing.
+
+    Loads a trained DGABFusion checkpoint.  The heuristic gate automatically
+    controls the blending ratio between CLS-token (dense) and BidFormer (sparse)
+    encoders based on the current window's pv_mean.
+    """
+
+    def __init__(self, budget=100, name="DGAB-Fusion-AuctionNet", cpa=2, category=1,
+                 model_param=None):
+        super().__init__(budget=budget, name=name, cpa=cpa, category=category)
+        if model_param is None:
+            model_param = {}
+
+        device = model_param.get('device', 'cpu')
+
+        import torch
+        import pickle
+        from bidding_train_env.baseline.dgab.model_fusion import (
+            DGABFusion, DGABFusionRollout)
+
+        pkl_path = os.path.join(model_param['save_dir'], 'normalize_dict.pkl')
+        with open(pkl_path, 'rb') as f:
+            nd = pickle.load(f)
+
+        self._rl_mean = np.asarray(nd['resourceleft_mean'], dtype=np.float32)
+        self._rl_std = np.asarray(nd['resourceleft_std'], dtype=np.float32)
+        self._stat_mean = np.asarray(nd.get('stat_mean', np.zeros(_STAT_DIM_PO)),
+                                     dtype=np.float32)
+        self._stat_std = np.asarray(nd.get('stat_std', np.ones(_STAT_DIM_PO)),
+                                    dtype=np.float32)
+
+        base_state_dim = int(nd.get('base_state_dim', _RL_DIM_PO + _STAT_DIM_PO))
+        critic_type = nd.get('critic_type', 'sequence')
+        self._obs_dim = int(nd.get('obs_dim', _OBS_DIM_PO))
+        scale = int(nd.get('scale', 2000))
+        rtg_scale = float(nd.get('rtg_scale', scale))
+
+        self._log1p_stat_dims = bool(nd.get('log1p_stat_dims', False))
+        self._sparse_stat_dims = list(nd.get('sparse_stat_dims', []))
+        self._log1p_scale = float(nd.get('log1p_scale', 1000.0))
+
+        self._max_imp = int(model_param.get('max_imp', 512))
+
+        gate_temperature = float(model_param.get('gate_temperature',
+                                   nd.get('gate_temperature', 1.0)))
+
+        model = DGABFusion(
+            base_state_dim=base_state_dim, act_dim=1,
+            hidden_size=model_param.get('hidden_size', 512),
+            max_ep_len=model_param.get('max_ep_len', 96),
+            time_dim=model_param.get('time_dim', 8),
+            block_config=model_param['block_config'],
+            critic_type=critic_type,
+            obs_dim=self._obs_dim,
+            macro_dim=_RL_DIM_PO,
+            device=device,
+            gate_temperature=gate_temperature,
+        )
+        ckpt = os.path.join(model_param['save_dir'],
+                            model_param.get('ckpt_name', 'complete_train.pt'))
+        model.load_state_dict(torch.load(ckpt, map_location=device))
+        model.to(device)
+        model.eval()
+
+        model._stat_mean_1 = float(nd.get('stat_mean_1',
+                                          float(self._stat_mean[1])))
+        model._stat_std_1 = float(nd.get('stat_std_1',
+                                         float(self._stat_std[1])))
+
+        self._device = device
+        self._budget = budget
+        self._cpa = cpa
+        self._K = model_param.get('K', 20)
+        self._scale = scale
+        self._rtg_scale = rtg_scale
+
+        V_goal = budget / (cpa + EPS)
+        rtg_v_cap = model_param.get('rtg_v_cap', None)
+        if rtg_v_cap is not None:
+            V_goal = min(V_goal, float(rtg_v_cap))
+
+        self._rollout = DGABFusionRollout(
+            model, V_goal=V_goal, C_target=cpa,
+            K=self._K, scale=scale, rtg_scale=rtg_scale)
+        self._prev_stat = np.zeros(_STAT_DIM_PO, dtype=np.float32)
+
+        logger.info(f'[DGAB-Fusion] {os.path.basename(str(model_param["save_dir"]))}: '
+                    f'base_state_dim={base_state_dim} '
+                    f'gate_temp={gate_temperature} V_goal={V_goal:.1f}')
+
+    def reset(self):
+        self.remaining_budget = self.budget
+        self._prev_stat = np.zeros(_STAT_DIM_PO, dtype=np.float32)
+        self._rollout.__init__(
+            self._rollout.model, V_goal=self._budget / (self._cpa + EPS),
+            C_target=self._cpa, K=self._K,
+            scale=self._scale, rtg_scale=self._rtg_scale)
+
+    def _build_obs_array(self, historyPValueInfo, historyBid, historyAuctionResult,
+                         historyImpressionResult, historyLeastWinningCost):
+        if not historyAuctionResult:
+            return np.zeros((1, self._obs_dim), dtype=np.float32)
+        pvi = np.asarray(historyPValueInfo[-1], dtype=np.float32)
+        auc = np.asarray(historyAuctionResult[-1], dtype=np.float32)
+        imp = np.asarray(historyImpressionResult[-1], dtype=np.float32)
+        n = auc.shape[0]
+        bid = (np.asarray(historyBid[-1], dtype=np.float32).reshape(-1)
+               if historyBid else np.zeros(n, dtype=np.float32))
+        lwc = (np.asarray(historyLeastWinningCost[-1], dtype=np.float32).reshape(-1)
+               if historyLeastWinningCost else np.zeros(n, dtype=np.float32))
+        obs = np.stack([pvi[:, 0], pvi[:, 1],
+                        auc[:, 0], auc[:, 1], auc[:, 2],
+                        imp[:, 0], imp[:, 1],
+                        bid, lwc], axis=1)
+        return obs.astype(np.float32)
+
+    def _build_state(self, timeStepIndex, obs):
+        num_steps = 48
+        rl = np.array([(num_steps - timeStepIndex) / num_steps,
+                       self.remaining_budget / (self._budget + EPS)],
+                      dtype=np.float32)
+        rl_norm = (rl - self._rl_mean) / self._rl_std
+
+        stat = _compute_stat_single_po(obs)
+        stat[14] = stat[1] - self._prev_stat[1]
+        stat[15] = stat[6] - self._prev_stat[6]
+        self._prev_stat = stat.copy()
+        if self._log1p_stat_dims:
+            for d in self._sparse_stat_dims:
+                stat[d] = np.log1p(stat[d] * self._log1p_scale)
+        stat_norm = (stat - self._stat_mean) / self._stat_std
+        return np.concatenate([rl_norm, stat_norm]).astype(np.float32)
+
+    def _build_obs_padded(self, obs):
+        M, od = self._max_imp, self._obs_dim
+        obs_pad = np.zeros((M, od), dtype=np.float32)
+        obs_mask = np.zeros(M, dtype=np.float32)
+        if not (obs == 0).all():
+            n_use = min(obs.shape[0], M)
+            obs_pad[:n_use] = obs[:n_use]
+            obs_mask[:n_use] = 1.0
+        return obs_pad, obs_mask
+
+    def bidding(self, timeStepIndex, pValues, pValueSigmas,
+                historyPValueInfo, historyBid,
+                historyAuctionResult, historyImpressionResult,
+                historyLeastWinningCost):
+        if timeStepIndex == 0:
+            self.reset()
+
+        obs = self._build_obs_array(
+            historyPValueInfo, historyBid, historyAuctionResult,
+            historyImpressionResult, historyLeastWinningCost)
+        state = self._build_state(timeStepIndex, obs)
+
+        if historyImpressionResult:
+            last_imp = np.asarray(historyImpressionResult[-1], dtype=np.float32)
+            last_auc = np.asarray(historyAuctionResult[-1], dtype=np.float32)
+            v_prev = float(last_imp[:, 1].sum())
+            c_prev = float((last_auc[:, 2] * last_imp[:, 0]).sum())
+            self._rollout.update_rtg(v_prev, c_prev)
+
+        obs_pad, obs_mask = self._build_obs_padded(obs)
+        alpha = float(np.asarray(
+            self._rollout.act(state, obs_padded=obs_pad, obs_mask=obs_mask)
+        ).reshape(-1)[0])
+
+        return alpha * np.asarray(pValues, dtype=np.float64)
