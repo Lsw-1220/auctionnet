@@ -150,6 +150,9 @@ class DGABFusion(nn.Module):
         self._stat_mean_1 = 0.0
         self._stat_std_1 = 1.0
 
+        # sentinel: DGABRollout.act() checks this to know obs encoding is needed
+        self.obs_encoder = True
+
         self.to(device)  # move all modules to target device
 
         # ── Optimizer (only actor + critic params) ──
