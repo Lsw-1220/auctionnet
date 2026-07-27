@@ -92,7 +92,6 @@ class BidFormerEncoder(nn.Module):
 
         ctx = self.macro_proj(macro).unsqueeze(1)                     # [N, 1, H]
         kpm = (obs_mask < 0.5)                                        # [N, M] True=pad
-
         # ctx 自身作为兜底 key: 当某步曝光集全为 pad 时(左侧 padding 或当步无曝光),
         # 保证每行至少一个非 mask key,避免 MultiheadAttention 整行 -inf 导致 softmax 出 NaN。
         # 此时该步退化为只 attend 自己 == 纯宏观状态 macro_proj(norm(rl)),与 use_obs=False 语义一致。
@@ -297,23 +296,34 @@ class DGABCrossAttnActor(nn.Module):
     a_t       = head([attn^V ; attn^C ; s_res])
     """
     def __init__(self, state_dim, act_dim, hidden_size=64, max_ep_len=96,
-                 time_dim=8, n_head=4, n_layer=3, block_config=None):
+                 time_dim=8, n_head=4, n_layer=3, block_config=None,
+                 query_no_stat=False):
+        """
+        query_no_stat (R7): 若为 True, V/C query 的 state 锚定移除 stat_t 维度
+        (仅保留 rl + snap), 消除 CrossAttn 对密度信号的双路放大.
+        Memory stream 和 state_proj 仍使用完整 state (含 stat_t).
+        """
         super().__init__()
         self.state_dim   = state_dim
         self.act_dim     = act_dim
         self.hidden_size = hidden_size
+        self.query_no_stat = query_no_stat
 
-        # memory stream
+        # R7: V/C query excludes stat_t (16 dims at indices 2:18)
+        _STAT_DIM = 16
+        query_state_dim = state_dim - _STAT_DIM if query_no_stat else state_dim
+
+        # memory stream (always full state)
         self.embed_state  = nn.Linear(state_dim, hidden_size)
         self.embed_action = nn.Linear(act_dim,   hidden_size)
         self.embed_time   = nn.Embedding(max_ep_len, time_dim)
         self.trans_memory = nn.Linear(hidden_size * 2 + time_dim, hidden_size)
 
-        # 双 query: V query 和 C query 各自独立
+        # 双 query
         self.embed_rtg_v  = nn.Linear(1, hidden_size)
         self.embed_rtg_c  = nn.Linear(1, hidden_size)
-        self.embed_state_v = nn.Linear(state_dim, hidden_size)  # state 锚定
-        self.embed_state_c = nn.Linear(state_dim, hidden_size)
+        self.embed_state_v = nn.Linear(query_state_dim, hidden_size)
+        self.embed_state_c = nn.Linear(query_state_dim, hidden_size)
         self.trans_query_v = nn.Linear(hidden_size + time_dim, hidden_size)
         self.trans_query_c = nn.Linear(hidden_size + time_dim, hidden_size)
 
@@ -374,14 +384,21 @@ class DGABCrossAttnActor(nn.Module):
         for block in self.mem_encoder:
             mem = block(mem, attention_mask)
 
+        # R7: V/C query uses state without stat_t (rl + snap only)
+        # State layout: [rl(0:2) | stat(2:18) | snap(18:)]
+        if self.query_no_stat:
+            states_q = torch.cat([states[:, :, :2], states[:, :, 18:]], dim=-1)
+        else:
+            states_q = states
+
         # V query: rtg_v + state + time
         rtg_v = rtg[:, :, 0:1]   # [B,T,1]
         rtg_c = rtg[:, :, 1:2]
         qv = self.trans_query_v(torch.cat([
-            self.embed_rtg_v(rtg_v) + self.embed_state_v(states),
+            self.embed_rtg_v(rtg_v) + self.embed_state_v(states_q),
             time_emb], dim=-1))
         qc = self.trans_query_c(torch.cat([
-            self.embed_rtg_c(rtg_c) + self.embed_state_c(states),
+            self.embed_rtg_c(rtg_c) + self.embed_state_c(states_q),
             time_emb], dim=-1))
 
         # 双路 cross-attn
@@ -552,6 +569,16 @@ class DGAB(nn.Module):
                 state_dim, act_dim, hidden_size=hidden_size,
                 max_ep_len=max_ep_len, time_dim=time_dim,
                 n_head=n_head, n_layer=n_layer, block_config=block_config)
+        elif actor_type == 'cross_attn_r7':
+            # R7: stat_t in memory only, excluded from V/C query to prevent
+            # dual-path amplification of density signal
+            n_layer = block_config['n_layer'] if block_config else 3
+            n_head  = block_config['n_head']  if block_config else 4
+            self.actor = DGABCrossAttnActor(
+                state_dim, act_dim, hidden_size=hidden_size,
+                max_ep_len=max_ep_len, time_dim=time_dim,
+                n_head=n_head, n_layer=n_layer, block_config=block_config,
+                query_no_stat=True)
         else:
             self.actor = DGABStackActor(state_dim, act_dim, hidden_size=hidden_size,
                                  max_ep_len=max_ep_len, time_dim=time_dim,

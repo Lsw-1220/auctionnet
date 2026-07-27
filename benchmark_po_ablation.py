@@ -66,7 +66,7 @@ BLOCK_CONFIG = {
 DEFAULT_MODEL_ROOT = 'D:/research/Experiment/autobidding/saved_model'
 DEFAULT_FO_DIR     = 'D:/research/Experiment/autobidding/saved_model/dgab_v3_20260701062347'
 
-PO_CONFIGS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6']
+PO_CONFIGS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7']
 ENSEMBLE_CONFIGS = ['r2r5']
 FUSION_CONFIGS = ['fusion']
 
@@ -349,6 +349,8 @@ def parse_args():
                     help='Override path for r5 checkpoint (bypasses model_root/dgab_po_r5)')
     ap.add_argument('--r6_dir', type=str, default=None,
                     help='Override path for r6 checkpoint (bypasses model_root/dgab_po_r6)')
+    ap.add_argument('--r7_dir', type=str, default=None,
+                    help='Override path for r7 checkpoint (bypasses model_root/dgab_po_r7)')
     ap.add_argument('--r2_dir', type=str, default=None,
                     help='Override path for r2 checkpoint (for r2r5 ensemble)')
     ap.add_argument('--sparsity_threshold', type=float, default=0.0,
