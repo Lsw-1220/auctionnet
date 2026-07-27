@@ -347,6 +347,8 @@ def parse_args():
                     help='Dir containing dgab_po_r0 ... dgab_po_r5 checkpoints')
     ap.add_argument('--r5_dir', type=str, default=None,
                     help='Override path for r5 checkpoint (bypasses model_root/dgab_po_r5)')
+    ap.add_argument('--r6_dir', type=str, default=None,
+                    help='Override path for r6 checkpoint (bypasses model_root/dgab_po_r6)')
     ap.add_argument('--r2_dir', type=str, default=None,
                     help='Override path for r2 checkpoint (for r2r5 ensemble)')
     ap.add_argument('--sparsity_threshold', type=float, default=0.0,
