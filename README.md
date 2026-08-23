@@ -117,9 +117,11 @@ All strategy training scripts support `--data`, `--steps`, `--batch_size`, `--de
 # IQL — single GPU
 python main/main_iql.py \
     --data ./data/traffic/training_data_rlData_folder/training_data_all-rlData.csv \
-    --steps 100000 --batch_size 256 --save ./saved_model/IQL_100k
+    --steps 100000 --batch_size 256 --save ./saved_model/IQL_100k \
+    --test_data ./data/traffic/period-12.csv
 
-# IQL — multi-dataset (concatenates all matching CSVs)
+# Multi-dataset input works for IQL, BC, BCQ, CQL, TD3_BC, DT, and OnlineLP
+# (all matching CSVs are concatenated before training)
 python main/main_iql.py \
     --data "./data/traffic/period-7.csv,./data/traffic/period-8.csv,./data/traffic/period-9.csv" \
     --steps 100000 --save ./saved_model/IQL_multi
@@ -127,6 +129,11 @@ python main/main_iql.py \
 # IQL — glob pattern
 python main/main_iql.py \
     --data "./data/traffic/period-*.csv" \
+    --steps 100000 --save ./saved_model/IQL_all
+
+# A directory is also accepted and loads all CSV files directly inside it
+python main/main_iql.py \
+    --data "./data/traffic/training_data_rlData_folder" \
     --steps 100000 --save ./saved_model/IQL_all
 
 # IQL — multi-GPU (DataParallel)
@@ -144,10 +151,13 @@ python main/main_cql.py --data <path> --steps <N> --batch_size <N> --multi_gpu -
 python main/main_td3_bc.py --data <path> --steps <N> --batch_size <N> --multi_gpu --save <dir>
 python main/main_decision_transformer.py --data <path> --steps <N> --batch_size <N> --multi_gpu --save <dir>
 
-# OnlineLP (no --steps/--batch_size/--device)
+# OnlineLP (no --steps/--batch_size/--device; --data accepts the same input forms)
 python main/main_onlineLp.py --data <path> --save <dir>
 ```
 Omit arguments to use defaults. `--multi_gpu` wraps the model in `nn.DataParallel` across all available GPUs.
+Trainable strategies save a self-contained `checkpoint_XXXXXXXX` directory every 1000 steps
+(and at the final step), then offline-test every checkpoint on `--test_data`. Results are written
+to `<save>/checkpoint_evaluation.csv`. OnlineLP has no iterative steps, so its single final model is tested.
 Omit arguments to use defaults.
 
 Use the trained strategy as PlayerBiddingStrategy:

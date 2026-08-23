@@ -2,7 +2,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import pandas as pd
-from bidding_train_env.common.utils import normalize_state, normalize_reward, save_normalize_dict
+from bidding_train_env.common.utils import (load_training_csvs, normalize_state,
+                                            normalize_reward, save_normalize_dict,
+                                            save_training_checkpoint)
 from bidding_train_env.baseline.iql.replay_buffer import ReplayBuffer
 from bidding_train_env.baseline.bc.behavior_clone import BC
 import logging
@@ -41,17 +43,8 @@ def train_bc_model(train_data_path="./data/traffic/training_data_rlData_folder/t
     train BC model
     """
 
-    import glob as _glob, re
-    paths = []
-    for p in re.split(r'[,s]+', train_data_path):
-            if not p.strip():
-                continue
-        p = p.strip()
-        matched = _glob.glob(p)
-        paths.extend(matched if matched else [p])
+    training_data, paths = load_training_csvs(train_data_path)
     logger.info(f'Loading {len(paths)} data file(s): {paths}')
-    dfs = [pd.read_csv(p) for p in paths]
-    training_data = pd.concat(dfs, ignore_index=True)
     logger.info(f'Total training samples: {len(training_data)}')
 
     def safe_literal_eval(val):
@@ -97,9 +90,10 @@ def train_bc_model(train_data_path="./data/traffic/training_data_rlData_folder/t
             states, actions = states.to(device), actions.to(device)
         a_loss = model.step(states, actions)
         logger.info(f"Step: {i} Action loss: {np.mean(a_loss)}")
+        step = i + 1
+        if step % 1000 == 0 or step == step_num:
+            save_training_checkpoint(model, save_dir, step, normalize_dic)
 
-    # model.save_net(save_dir)
-    model.save_jit(save_dir)
     test_trained_model(model, replay_buffer)
 
 

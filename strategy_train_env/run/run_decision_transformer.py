@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from bidding_train_env.common.utils import normalize_state, normalize_reward, save_normalize_dict
+from bidding_train_env.common.utils import (normalize_state, normalize_reward,
+                                            save_normalize_dict, save_training_checkpoint)
 from bidding_train_env.baseline.dt.utils import EpisodeReplayBuffer
 from bidding_train_env.baseline.dt.dt import DecisionTransformer
 from torch.utils.data import DataLoader, WeightedRandomSampler
@@ -91,8 +92,12 @@ def train_dt_model(train_data_path="./data/traffic/training_data_rlData_folder/t
 
         i += 1
         logger.info(f"Step: {i} Action loss: {train_loss}")
+        if i % 1000 == 0 or i == step_num:
+            save_training_checkpoint(
+                model, save_dir, i,
+                {"state_mean": replay_buffer.state_mean, "state_std": replay_buffer.state_std},
+                method='save_net')
 
-    model.save_net(save_dir)
     test_state = np.ones(state_dim, dtype=np.float32)
     logger.info(f"Test action: {model.take_actions(test_state)}")
 

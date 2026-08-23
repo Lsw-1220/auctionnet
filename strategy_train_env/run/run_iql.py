@@ -2,7 +2,9 @@ import numpy as np
 import logging
 import torch
 import torch.nn as nn
-from bidding_train_env.common.utils import normalize_state, normalize_reward, save_normalize_dict
+from bidding_train_env.common.utils import (load_training_csvs, normalize_state,
+                                            normalize_reward, save_normalize_dict,
+                                            save_training_checkpoint)
 from bidding_train_env.baseline.iql.replay_buffer import ReplayBuffer
 from bidding_train_env.baseline.iql.iql import IQL
 import pandas as pd
@@ -23,17 +25,8 @@ def train_iql_model(train_data_path="./data/traffic/training_data_rlData_folder/
     Train the IQL model.
     train_data_path: single CSV path, or comma-separated list of paths, or glob pattern
     """
-    import glob as _glob, re
-    paths = []
-    for p in re.split(r'[,\s]+', train_data_path):
-        p = p.strip()
-        if not p:
-            continue
-        matched = _glob.glob(p)
-        paths.extend(matched if matched else [p])
+    training_data, paths = load_training_csvs(train_data_path)
     logger.info(f'Loading {len(paths)} data file(s): {paths}')
-    dfs = [pd.read_csv(p) for p in paths]
-    training_data = pd.concat(dfs, ignore_index=True)
     logger.info(f'Total training samples: {len(training_data)}')
 
     def safe_literal_eval(val):
@@ -83,10 +76,9 @@ def train_iql_model(train_data_path="./data/traffic/training_data_rlData_folder/
             logger.info(f'Using device: {device}')
     else:
         logger.info('Using CPU')
-    train_model_steps(model, replay_buffer, step_num=step_num, batch_size=batch_size, device=device)
-
-    # Save model
-    model.save_jit(save_dir)
+    train_model_steps(model, replay_buffer, step_num=step_num, batch_size=batch_size, device=device,
+                      checkpoint_fn=lambda step: save_training_checkpoint(
+                          model, save_dir, step, normalize_dic))
 
     # Test trained model
     test_trained_model(model, replay_buffer)
@@ -104,7 +96,8 @@ def add_to_replay_buffer(replay_buffer, training_data, is_normalize):
                                np.array([done]))
 
 
-def train_model_steps(model, replay_buffer, step_num=20000, batch_size=100, device="cuda"):
+def train_model_steps(model, replay_buffer, step_num=20000, batch_size=100, device="cuda",
+                      checkpoint_fn=None):
     for i in range(step_num):
         states, actions, rewards, next_states, terminals = replay_buffer.sample(batch_size)
         if device != "cpu":
@@ -114,6 +107,9 @@ def train_model_steps(model, replay_buffer, step_num=20000, batch_size=100, devi
         q_loss, v_loss, a_loss = model.step(states, actions, rewards, next_states, terminals)
         if i % 1000 == 0:
             logger.info(f'Step: {i} Q_loss: {q_loss} V_loss: {v_loss} A_loss: {a_loss}')
+        step = i + 1
+        if checkpoint_fn and (step % 1000 == 0 or step == step_num):
+            checkpoint_fn(step)
 
 
 def test_trained_model(model, replay_buffer):

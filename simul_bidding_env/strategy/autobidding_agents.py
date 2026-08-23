@@ -750,10 +750,13 @@ class DGABPOAuctionNetAgent(AuctionNetBase):
         if rtg_v_cap is not None:
             self._V_goal = min(self._V_goal, float(rtg_v_cap))
 
+        self._debug_capture = bool(model_param.get('debug_capture', False))
         self._rollout = DGABRollout(
             model, V_goal=self._V_goal, C_target=cpa,
-            K=self._K, scale=scale, rtg_scale=rtg_scale)
+            K=self._K, scale=scale, rtg_scale=rtg_scale,
+            debug_capture=self._debug_capture)
         self._prev_stat = np.zeros(_STAT_DIM_PO, dtype=np.float32)
+        self.debug_log = []   # list of per-tick dicts when debug_capture=True
 
         logger.info(f'[DGAB-PO] {os.path.basename(str(model_param["save_dir"]))}: '
                     f'base_state_dim={base_state_dim} use_stat={self._use_stat} '
@@ -764,9 +767,11 @@ class DGABPOAuctionNetAgent(AuctionNetBase):
     def reset(self):
         self.remaining_budget = self.budget
         self._prev_stat = np.zeros(_STAT_DIM_PO, dtype=np.float32)
+        self.debug_log = []
         self._rollout.__init__(
             self._rollout.model, V_goal=self._V_goal, C_target=self._cpa,
-            K=self._K, scale=self._scale, rtg_scale=self._rtg_scale)
+            K=self._K, scale=self._scale, rtg_scale=self._rtg_scale,
+            debug_capture=self._debug_capture)
 
     def _build_obs_array(self, historyPValueInfo, historyBid, historyAuctionResult,
                          historyImpressionResult, historyLeastWinningCost):
@@ -858,6 +863,9 @@ class DGABPOAuctionNetAgent(AuctionNetBase):
             ).reshape(-1)[0])
         else:
             alpha = float(np.asarray(self._rollout.act(state)).reshape(-1)[0])
+
+        if self._debug_capture and self._rollout.last_debug is not None:
+            self.debug_log.append(dict(self._rollout.last_debug))
 
         return alpha * np.asarray(pValues, dtype=np.float64)
 
@@ -1330,10 +1338,13 @@ class DGABFusionAuctionNetAgent(AuctionNetBase):
         if rtg_v_cap is not None:
             V_goal = min(V_goal, float(rtg_v_cap))
 
+        self._debug_capture = bool(model_param.get('debug_capture', False))
         self._rollout = DGABFusionRollout(
             model, V_goal=V_goal, C_target=cpa,
-            K=self._K, scale=scale, rtg_scale=rtg_scale)
+            K=self._K, scale=scale, rtg_scale=rtg_scale,
+            debug_capture=self._debug_capture)
         self._prev_stat = np.zeros(_STAT_DIM_PO, dtype=np.float32)
+        self.debug_log = []
 
         logger.info(f'[DGAB-Fusion] {os.path.basename(str(model_param["save_dir"]))}: '
                     f'base_state_dim={base_state_dim} '
@@ -1342,10 +1353,12 @@ class DGABFusionAuctionNetAgent(AuctionNetBase):
     def reset(self):
         self.remaining_budget = self.budget
         self._prev_stat = np.zeros(_STAT_DIM_PO, dtype=np.float32)
+        self.debug_log = []
         self._rollout.__init__(
             self._rollout.model, V_goal=self._budget / (self._cpa + EPS),
             C_target=self._cpa, K=self._K,
-            scale=self._scale, rtg_scale=self._rtg_scale)
+            scale=self._scale, rtg_scale=self._rtg_scale,
+            debug_capture=self._debug_capture)
 
     def _build_obs_array(self, historyPValueInfo, historyBid, historyAuctionResult,
                          historyImpressionResult, historyLeastWinningCost):
@@ -1415,5 +1428,8 @@ class DGABFusionAuctionNetAgent(AuctionNetBase):
         alpha = float(np.asarray(
             self._rollout.act(state, obs_padded=obs_pad, obs_mask=obs_mask)
         ).reshape(-1)[0])
+
+        if self._debug_capture and self._rollout.last_debug is not None:
+            self.debug_log.append(dict(self._rollout.last_debug))
 
         return alpha * np.asarray(pValues, dtype=np.float64)

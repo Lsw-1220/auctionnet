@@ -1,7 +1,6 @@
 import numpy as np
 import math
 import logging
-from bidding_train_env.strategy import PlayerBiddingStrategy
 from bidding_train_env.offline_eval.test_dataloader import TestDataLoader
 from bidding_train_env.offline_eval.offline_env import OfflineEnv
 
@@ -22,14 +21,16 @@ def getScore_neurips(reward, cpa, cpa_constraint):
     return penalty * reward
 
 
-def run_test():
+def run_test(test_data='data/traffic/period-12.csv', agent=None):
     """
     offline evaluation
     """
 
-    data_loader = TestDataLoader(file_path='strategy_train_env/data/traffic/period-12.csv')
+    data_loader = TestDataLoader(file_path=test_data)
     env = OfflineEnv()
-    agent = PlayerBiddingStrategy()
+    if agent is None:
+        from bidding_train_env.strategy import PlayerBiddingStrategy
+        agent = PlayerBiddingStrategy()
     print(agent.name)
 
     keys, test_dict = data_loader.keys, data_loader.test_dict
@@ -114,6 +115,12 @@ def run_test():
     logger.info(f'  Avg Score:  {np.mean(all_scores):.2f}')
     logger.info(f'  Avg Reward: {np.mean(all_rewards):.1f}')
     logger.info(f'  Avg CPA:    {np.mean(all_cpas):.2f}')
+    return {
+        'score': float(np.mean(all_scores)),
+        'reward': float(np.mean(all_rewards)),
+        'cost': float(np.mean(all_costs)),
+        'cpa': float(np.mean(all_cpas)),
+    }
 
 
 if __name__ == '__main__':

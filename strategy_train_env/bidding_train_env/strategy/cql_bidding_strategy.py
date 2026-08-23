@@ -17,14 +17,15 @@ class CqlBiddingStrategy(BaseBiddingStrategy):
     CQL Strategy
     """
 
-    def __init__(self, budget=100, name="Cql-PlayerStrategy", cpa=2, category=1):
+    def __init__(self, budget=100, name="Cql-PlayerStrategy", cpa=2, category=1, model_dir=None):
         super().__init__(budget, name, cpa, category)
 
         file_name = os.path.dirname(os.path.realpath(__file__))
         dir_name = os.path.dirname(file_name)
         dir_name = os.path.dirname(dir_name)
-        model_path = os.path.join(dir_name, "saved_model", "CQLtest", "cql_model.pth")
-        dict_path = os.path.join(dir_name, "saved_model", "CQLtest", "normalize_dict.pkl")
+        model_dir = model_dir or os.path.join(dir_name, "saved_model", "CQLtest")
+        model_path = os.path.join(model_dir, "cql_model.pth")
+        dict_path = os.path.join(model_dir, "normalize_dict.pkl")
         self.model = torch.jit.load(model_path)
         with open(dict_path, 'rb') as file:
             self.normalize_dict = pickle.load(file)

@@ -9,12 +9,13 @@ class OnlineLpBiddingStrategy(BaseBiddingStrategy):
     OnlineLpBidding Strategy
     """
 
-    def __init__(self, budget=100, name="OnlineLpBiddingStrategy", cpa=2, category=1):
+    def __init__(self, budget=100, name="OnlineLpBiddingStrategy", cpa=2, category=1, model_dir=None):
         super().__init__(budget, name, cpa, category)
         file_name = os.path.dirname(os.path.realpath(__file__))
         dir_name = os.path.dirname(file_name)
         dir_name = os.path.dirname(dir_name)
-        model_path = os.path.join(dir_name, "saved_model", "onlineLpTest", f"period.csv")
+        model_dir = model_dir or os.path.join(dir_name, "saved_model", "onlineLpTest")
+        model_path = os.path.join(model_dir, "period.csv")
         self.category = category
 
         self.model = pd.read_csv(model_path)

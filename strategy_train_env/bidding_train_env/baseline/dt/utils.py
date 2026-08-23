@@ -5,6 +5,7 @@ import ast
 import numpy as np
 import pickle
 import random
+from bidding_train_env.common.utils import load_training_csvs
 
 
 class EpisodeReplayBuffer(Dataset):
@@ -16,15 +17,8 @@ class EpisodeReplayBuffer(Dataset):
 
         self.state_dim = state_dim
         self.act_dim = act_dim
-        import glob as _glob, re
-        paths = []
-        for p in re.split(r'[,\s]+', data_path):
-            p = p.strip()
-            matched = _glob.glob(p)
-            paths.extend(matched if matched else [p])
+        training_data, paths = load_training_csvs(data_path)
         print(f'Loading {len(paths)} data file(s): {paths}')
-        dfs = [pd.read_csv(p) for p in paths]
-        training_data = pd.concat(dfs, ignore_index=True)
         print(f'Total training samples: {len(training_data)}')
 
         def safe_literal_eval(val):

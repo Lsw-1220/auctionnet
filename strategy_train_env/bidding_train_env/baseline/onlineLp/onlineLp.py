@@ -1,7 +1,7 @@
 import os
 import pandas as pd
-import glob
 import sys
+from bidding_train_env.common.utils import load_training_csvs
 root_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, root_path)
 print(sys.path)
@@ -16,16 +16,11 @@ class OnlineLp:
     def train(self, save_path):
         if not os.path.exists(save_path):
             os.makedirs(save_path)
-        csv_files = glob.glob(os.path.join(self.dataPath, '*.csv'))
-        print(csv_files)
-        csv_files = sorted(csv_files)
-        # select episode-0
-        for i, csv_file_path in enumerate(csv_files[0:1]):
-            print("开始分析" + csv_file_path)
-            df = pd.read_csv(csv_file_path)
-            episodeRes = self.onlinelp_for_specific_episode(df)
-            episodeRes.to_csv(f'{save_path}/period.csv', index=False)
-            print("完成分析" + csv_file_path)
+        df, csv_files = load_training_csvs(self.dataPath)
+        print(f'Loading {len(csv_files)} data file(s): {csv_files}')
+        print(f'Total training samples: {len(df)}')
+        episodeRes = self.onlinelp_for_specific_episode(df)
+        episodeRes.to_csv(os.path.join(save_path, 'period.csv'), index=False)
 
     def onlinelp_for_specific_episode(self, df):
         df_filter = df[(df["pValue"] > 0) & (df["leastWinningCost"] > 0.0001)]

@@ -5,6 +5,15 @@ from simul_bidding_env.strategy.base_bidding_strategy import BaseBiddingStrategy
 import os
 
 
+class NumpyCompatUnpickler(pickle.Unpickler):
+    """Load NumPy 2.x pickles in environments that still use NumPy 1.x."""
+
+    def find_class(self, module, name):
+        if module == "numpy._core" or module.startswith("numpy._core."):
+            module = module.replace("numpy._core", "numpy.core", 1)
+        return super().find_class(module, name)
+
+
 class IqlBiddingStrategy(BaseBiddingStrategy):
     """
     IQL Strategy
@@ -25,7 +34,7 @@ class IqlBiddingStrategy(BaseBiddingStrategy):
         self.model = torch.jit.load(model_path, map_location=torch.device(device))
         self._device = device
         with open(dict_path, 'rb') as file:
-            self.normalize_dict = pickle.load(file)
+            self.normalize_dict = NumpyCompatUnpickler(file).load()
 
     def reset(self):
         self.remaining_budget = self.budget

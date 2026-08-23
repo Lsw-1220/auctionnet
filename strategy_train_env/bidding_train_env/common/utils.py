@@ -2,6 +2,49 @@ import pandas as pd
 import os
 import pickle
 import numpy as np
+import glob
+from copy import deepcopy
+import torch
+
+
+def resolve_training_data_paths(data_paths):
+    """Resolve CSV inputs from files, directories, comma-separated values, or globs."""
+    if isinstance(data_paths, (str, os.PathLike)):
+        inputs = [item.strip() for item in str(data_paths).split(',') if item.strip()]
+    else:
+        inputs = [str(item).strip() for item in data_paths if str(item).strip()]
+
+    resolved = []
+    for item in inputs:
+        if os.path.isdir(item):
+            matches = glob.glob(os.path.join(item, '*.csv'))
+        else:
+            matches = glob.glob(item)
+        if not matches:
+            raise FileNotFoundError(f'No training CSV matched: {item}')
+        resolved.extend(path for path in sorted(matches) if path.lower().endswith('.csv'))
+
+    # Preserve user/glob order while avoiding accidental duplicate loading.
+    resolved = list(dict.fromkeys(resolved))
+    if not resolved:
+        raise FileNotFoundError(f'No training CSV files found in: {data_paths}')
+    return resolved
+
+
+def load_training_csvs(data_paths):
+    """Load and concatenate all CSV inputs into one training DataFrame."""
+    paths = resolve_training_data_paths(data_paths)
+    return pd.concat([pd.read_csv(path) for path in paths], ignore_index=True), paths
+
+
+def save_training_checkpoint(model, save_dir, step, normalize_dict, method='save_jit'):
+    """Save a self-contained checkpoint without moving the training model to CPU."""
+    checkpoint_dir = os.path.join(save_dir, f'checkpoint_{step:08d}')
+    save_normalize_dict(normalize_dict, checkpoint_dir)
+    base_model = model.module if isinstance(model, torch.nn.DataParallel) else model
+    snapshot = deepcopy(base_model)
+    getattr(snapshot, method)(checkpoint_dir)
+    return checkpoint_dir
 
 
 def normalize_state(training_data, state_dim, normalize_indices):

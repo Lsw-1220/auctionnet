@@ -50,6 +50,8 @@ from simul_bidding_env.Controller.Controller import Controller
 from simul_bidding_env.strategy.autobidding_agents import (
     GAVEAuctionNetAgent, DGABFOAuctionNetAgent, DTAuctionNetAgent,
 )
+from simul_bidding_env.strategy.vgab_bidding_strategy import VGABStrategy
+from simul_bidding_env.strategy.dgabshare_bidding_strategy import DGABShareStrategy
 
 # ═══════════════════════════════════════════════
 # Config (defaults — override via CLI)
@@ -63,9 +65,11 @@ BLOCK_CONFIG = {
 
 GAVE_SAVE_DIR = './saved_model/gave_20k_dense'
 DGAB_SAVE_DIR   = './saved_model/dgab_v3'
+VGAB_SAVE_DIR   = './saved_model/vgab'
 DT_SAVE_DIR     = './saved_model/DTdense'
-IQL_SAVE_DIR    = './strategy_train_env/saved_model/IQL_4gpu'
-GUIDE_SAVE_DIR  = './strategy_train_env/saved_model/GUIDE'
+IQL_SAVE_DIR    = './strategy_train_env/saved_model/IQLtest'
+GUIDE_SAVE_DIR  = './strategy_train_env/saved_model/9000'
+DGABSHARE_SAVE_DIR = './saved_model/dgabshare_full'
 OUTPUT_DIR      = None  # None → use {_PROJECT_ROOT}/exp_data
 
 NUM_ADVERTISERS = 48
@@ -73,8 +77,8 @@ NUM_TICK = 48
 FIXED_SEED = 42
 RTG_V_CAP = 10
 
-DEFAULT_PV_SWEEP = [0.0003, 0.0005, 0.0007, 0.0009, 0.001, 0.003, 0.005, 0.007]
-
+#DEFAULT_PV_SWEEP = [0.0003, 0.0005, 0.0007, 0.0009, 0.001, 0.003, 0.005, 0.007]
+DEFAULT_PV_SWEEP = [0.0005]
 # ═══════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════
@@ -98,12 +102,16 @@ def parse_args():
                     help='GAVE model directory')
     ap.add_argument('--dgab_dir', type=str, default=None,
                     help='DGAB model directory')
+    ap.add_argument('--vgab_dir', type=str, default=None,
+                    help='VGAB model directory')
     ap.add_argument('--dt_dir', type=str, default=None,
                     help='DT model directory')
     ap.add_argument('--iql_dir', type=str, default=None,
                     help='IQL model directory')
     ap.add_argument('--guide_dir', type=str, default=None,
                     help='GUIDE model directory')
+    ap.add_argument('--dgabshare_dir', type=str, default=None,
+                    help='DGABShare model directory (actor.pt + normalize_dict.pkl)')
     return ap.parse_args()
 
 
@@ -174,6 +182,20 @@ def make_dgab(budget, cpa, category, pvalue_mean_base=None, **kw):
     )
 
 
+def make_vgab(budget, cpa, category, pvalue_mean_base=None, **kw):
+    mp = dict(
+        save_dir=VGAB_SAVE_DIR,
+        device=DEVICE
+    )
+    if pvalue_mean_base is not None:
+        mp['pvalue_mean_base'] = pvalue_mean_base
+    return VGABStrategy(
+        budget=budget, cpa=cpa, category=category,
+        name='VGAB-Player',
+        model_param=mp,
+    )
+
+
 def make_guide(budget, cpa, category, **kw):
     from simul_bidding_env.strategy.guide_bidding_strategy import GUIDEStrategy
     return GUIDEStrategy(
@@ -184,13 +206,16 @@ def make_guide(budget, cpa, category, **kw):
     )
 
 
+def make_dgabshare(budget, cpa, category, **kw):
+    return DGABShareStrategy(
+        budget=budget, cpa=cpa, category=category,
+        name='DGABShare',
+        model_param=dict(save_dir=DGABSHARE_SAVE_DIR, device=DEVICE),
+    )
+
+
 STRATEGIES = [
-    ('PID',   make_pid),
-    ('IQL',   make_iql),
-    ('DT',    make_dt),
-    ('GAVE',  make_gave),
-    ('DGAB',  make_dgab),
-    ('GUIDE', make_guide),
+    ('DGABShare', make_dgabshare)
 ]
 
 
@@ -325,7 +350,7 @@ def run_one_episode(controller, player_index, agent_factory, pvalue_mean_base):
 # ═══════════════════════════════════════════════
 
 def main():
-    global DEVICE, GAVE_SAVE_DIR, DGAB_SAVE_DIR, DT_SAVE_DIR, IQL_SAVE_DIR, GUIDE_SAVE_DIR, OUTPUT_DIR
+    global DEVICE, GAVE_SAVE_DIR, DGAB_SAVE_DIR, VGAB_SAVE_DIR, DT_SAVE_DIR, IQL_SAVE_DIR, GUIDE_SAVE_DIR, DGABSHARE_SAVE_DIR, OUTPUT_DIR
 
     args = parse_args()
 
@@ -338,9 +363,11 @@ def main():
     # Apply CLI path overrides
     if args.gave_dir:   GAVE_SAVE_DIR = args.gave_dir
     if args.dgab_dir:   DGAB_SAVE_DIR = args.dgab_dir
+    if args.vgab_dir:   VGAB_SAVE_DIR = args.vgab_dir
     if args.dt_dir:     DT_SAVE_DIR   = args.dt_dir
     if args.iql_dir:    IQL_SAVE_DIR    = args.iql_dir
     if args.guide_dir:  GUIDE_SAVE_DIR  = args.guide_dir
+    if args.dgabshare_dir: DGABSHARE_SAVE_DIR = args.dgabshare_dir
     OUTPUT_DIR = args.output_dir  # None → use default below
 
     np.random.seed(seed)

@@ -66,7 +66,7 @@ BLOCK_CONFIG = {
 DEFAULT_MODEL_ROOT = 'D:/research/Experiment/autobidding/saved_model'
 DEFAULT_FO_DIR     = 'D:/research/Experiment/autobidding/saved_model/dgab_v3_20260701062347'
 
-PO_CONFIGS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7']
+PO_CONFIGS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8']
 ENSEMBLE_CONFIGS = ['r2r5']
 FUSION_CONFIGS = ['fusion']
 
@@ -90,6 +90,7 @@ def make_po_agent(cfg, budget, cpa, category, args):
         device=args.device,
         K=20,
         max_imp=args.max_imp,
+        debug_capture=args.debug_capture,
     )
     if args.rtg_v_cap is not None:
         mp['rtg_v_cap'] = args.rtg_v_cap
@@ -161,6 +162,7 @@ def make_fusion_agent(budget, cpa, category, args):
         max_imp=args.max_imp,
         save_dir=os.path.join(args.model_root, 'DGAB_fusion'),
         gate_temperature=getattr(args, 'gate_temperature', 1.0),
+        debug_capture=args.debug_capture,
     )
     if args.rtg_v_cap is not None:
         mp['rtg_v_cap'] = args.rtg_v_cap
@@ -322,7 +324,8 @@ def run_one_episode(controller, episode, player_index,
     else:
         penalty = 1.0
 
-    return {
+    alpha_arr = np.asarray(alpha_ests, dtype=np.float64)
+    result = {
         'score': penalty * player_reward,
         'reward': int(player_reward),
         'cost': player_cost,
@@ -331,7 +334,24 @@ def run_one_episode(controller, episode, player_index,
         'budget_used': player_cost / budgets[player_index],
         'win_rate': player_won / (total_player_pv + 1e-10),
         'alpha_mean': float(np.mean(alpha_ests)),
+        'alpha_p90': float(np.percentile(alpha_arr, 90)),
+        'alpha_max': float(np.max(alpha_arr)),
     }
+
+    # ── Optional actor-internal diagnostics (debug_capture=True) ──
+    debug_log = getattr(agents[player_index], 'debug_log', None)
+    if debug_log:
+        keys = [k for k in debug_log[0].keys() if k not in ('t', 'action')]
+        for k in keys:
+            vals = np.asarray([d[k] for d in debug_log if k in d], dtype=np.float64)
+            if vals.size == 0:
+                continue
+            result[f'{k}_p50'] = float(np.percentile(vals, 50))
+            result[f'{k}_p90'] = float(np.percentile(vals, 90))
+            result[f'{k}_max'] = float(np.max(vals))
+        result['_debug_trace'] = debug_log  # consumed by caller, not written to summary csv
+
+    return result
 
 
 # ═══════════════════════════════════════════════
@@ -351,6 +371,8 @@ def parse_args():
                     help='Override path for r6 checkpoint (bypasses model_root/dgab_po_r6)')
     ap.add_argument('--r7_dir', type=str, default=None,
                     help='Override path for r7 checkpoint (bypasses model_root/dgab_po_r7)')
+    ap.add_argument('--r8_dir', type=str, default=None,
+                    help='Override path for r8 checkpoint (bypasses model_root/dgab_po_r8)')
     ap.add_argument('--r2_dir', type=str, default=None,
                     help='Override path for r2 checkpoint (for r2r5 ensemble)')
     ap.add_argument('--sparsity_threshold', type=float, default=0.0,
@@ -380,6 +402,13 @@ def parse_args():
                     help='Output file prefix under the output dir')
     ap.add_argument('--output_dir', type=str, default=None,
                     help='Output directory (default: {project}/exp_data)')
+    ap.add_argument('--debug_capture', action='store_true',
+                    help='Capture actor-internal diagnostics (qv/qc/s_res/fused '
+                         'norms for cross_attn actors; state_token norm for stack '
+                         'actors; gate g + snap norms for fusion) per tick and '
+                         'save p50/p90/max summaries + full per-tick trace CSV. '
+                         'Only supported for r4-r8/fusion configs (cross_attn or '
+                         'fusion actors); no-ops for r0-r3/pid/fo.')
     return ap.parse_args()
 
 
@@ -417,6 +446,7 @@ def main():
     from simul_bidding_env.strategy.pid_bidding_strategy import PidBiddingStrategy
 
     rows = []
+    debug_rows = []
     t_start = time.time()
 
     for pv_val in args.pv:
@@ -470,6 +500,12 @@ def main():
                                 f'budget={result["budget_used"]:.0%} '
                                 f'win_rate={result["win_rate"]:.2%}')
 
+                    debug_trace = result.pop('_debug_trace', None)
+                    if debug_trace:
+                        for d in debug_trace:
+                            debug_rows.append(dict(pvalue_mean_base=pv_val, episode=ep,
+                                                   advertiser=player_idx, config=cfg, **d))
+
                     rows.append(dict(pvalue_mean_base=pv_val, episode=ep,
                                      advertiser=player_idx, config=cfg,
                                      elapsed_s=round(elapsed, 1), **result))
@@ -488,6 +524,13 @@ def main():
     df.to_csv(detailed_path, index=False)
     logger.info(f'Detailed results saved to {detailed_path}')
 
+    if debug_rows:
+        debug_df = pd.DataFrame(debug_rows)
+        debug_path = os.path.join(out_dir, f'{args.output}_debug_trace.csv')
+        debug_df.to_csv(debug_path, index=False)
+        logger.info(f'Per-tick actor-internal debug trace saved to {debug_path} '
+                    f'({len(debug_df)} rows)')
+
     pivot = df.groupby(['pvalue_mean_base', 'config'])['score'].mean().unstack('config')
     # keep declared config order in columns
     pivot = pivot[[c for c in configs if c in pivot.columns]]
@@ -495,8 +538,12 @@ def main():
     pivot.to_csv(pivot_path)
     logger.info(f'Pivot saved to {pivot_path}')
 
+    base_cols = ['score', 'reward', 'cost', 'cpa_real', 'budget_used', 'win_rate',
+                'alpha_mean', 'alpha_p90', 'alpha_max']
+    extra_cols = [c for c in df.columns if c.endswith(('_p50', '_p90', '_max'))
+                 and c not in base_cols]
     summary = df.groupby(['pvalue_mean_base', 'config'])[
-        ['score', 'reward', 'cost', 'cpa_real', 'budget_used', 'win_rate', 'alpha_mean']
+        base_cols + extra_cols
     ].mean().reset_index()
     summary_path = os.path.join(out_dir, f'{args.output}_summary.csv')
     summary.to_csv(summary_path, index=False)

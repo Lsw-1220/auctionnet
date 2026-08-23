@@ -15,14 +15,15 @@ class DtBiddingStrategy(BaseBiddingStrategy):
     Decision-Transformer-PlayerStrategy
     """
 
-    def __init__(self, budget=100, name="Decision-Transformer-PlayerStrategy", cpa=2, category=1):
+    def __init__(self, budget=100, name="Decision-Transformer-PlayerStrategy", cpa=2, category=1, model_dir=None):
         super().__init__(budget, name, cpa, category)
 
         file_name = os.path.dirname(os.path.realpath(__file__))
         dir_name = os.path.dirname(file_name)
         dir_name = os.path.dirname(dir_name)
-        model_path = os.path.join(dir_name, "saved_model", "DTtest", "dt.pt")
-        picklePath = os.path.join(dir_name, "saved_model", "DTtest", "normalize_dict.pkl")
+        model_dir = model_dir or os.path.join(dir_name, "saved_model", "DTtest")
+        model_path = os.path.join(model_dir, "dt.pt")
+        picklePath = os.path.join(model_dir, "normalize_dict.pkl")
 
         with open(picklePath, 'rb') as f:
             normalize_dict = pickle.load(f)
@@ -106,5 +107,4 @@ class DtBiddingStrategy(BaseBiddingStrategy):
                                         pre_reward=sum(history_conversion[-1]) if len(history_conversion) != 0 else None)
         bids = alpha * pValues
         return bids
-
 
