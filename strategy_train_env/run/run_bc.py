@@ -2,8 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import pandas as pd
-from bidding_train_env.common.utils import (load_training_csvs, normalize_state,
-                                            normalize_reward, save_normalize_dict,
+from bidding_train_env.common.utils import (load_compact_transition_arrays, save_normalize_dict,
                                             save_training_checkpoint)
 from bidding_train_env.baseline.iql.replay_buffer import ReplayBuffer
 from bidding_train_env.baseline.bc.behavior_clone import BC
@@ -43,36 +42,15 @@ def train_bc_model(train_data_path="./data/traffic/training_data_rlData_folder/t
     train BC model
     """
 
-    training_data, paths = load_training_csvs(train_data_path)
+    arrays, normalize_dic, paths = load_compact_transition_arrays(train_data_path, state_dim=16)
     logger.info(f'Loading {len(paths)} data file(s): {paths}')
-    logger.info(f'Total training samples: {len(training_data)}')
-
-    def safe_literal_eval(val):
-        if pd.isna(val):
-            return val  # 如果是NaN，返回NaN
-        try:
-            return ast.literal_eval(val)
-        except (ValueError, SyntaxError):
-            print(ValueError)
-            return val  # 如果解析出错，返回原值
-
-    # 使用apply方法应用上述函数
-    training_data["state"] = training_data["state"].apply(safe_literal_eval)
-    training_data["next_state"] = training_data["next_state"].apply(safe_literal_eval)
+    logger.info(f'Total training samples: {len(arrays[0])}')
 
     state_dim = 16
-    normalize_indices = [13, 14, 15]
-    is_normalize = True
-
-    normalize_dic = normalize_state(training_data, state_dim, normalize_indices)
-    normalize_reward(training_data, "reward_continuous")
     save_normalize_dict(normalize_dic, save_dir)
 
-    replay_buffer = ReplayBuffer()
-    add_to_replay_buffer(replay_buffer, training_data, is_normalize)
-    print(len(replay_buffer.memory))
-
-    logger.info(f"Replay buffer size: {len(replay_buffer.memory)}")
+    replay_buffer = ReplayBuffer(arrays)
+    logger.info(f"Replay buffer size: {len(replay_buffer)}")
 
     model = BC(dim_obs=state_dim)
     if device != "cpu" and torch.cuda.is_available():

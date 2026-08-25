@@ -210,7 +210,7 @@ def make_dgabshare(budget, cpa, category, **kw):
     return DGABShareStrategy(
         budget=budget, cpa=cpa, category=category,
         name='DGABShare',
-        model_param=dict(save_dir=DGABSHARE_SAVE_DIR, device=DEVICE),
+        model_param=dict(save_dir=DGABSHARE_SAVE_DIR, ckpt_name='step_15000.pt', device=DEVICE),
     )
 
 

@@ -74,8 +74,12 @@ class DecisionTransformer(nn.Module):
 
         self.length_times = 3
         self.hidden_size = 64
-        self.state_mean = state_mean
-        self.state_std = state_std
+        # Replay-buffer statistics are NumPy arrays.  Keep them as non-persistent
+        # buffers so model.to(device) moves them together with the network while
+        # remaining compatible with checkpoints created before these were
+        # registered as buffers.
+        self.register_buffer("state_mean", torch.as_tensor(state_mean, dtype=torch.float32), persistent=False)
+        self.register_buffer("state_std", torch.as_tensor(state_std, dtype=torch.float32), persistent=False)
         # assert self.hidden_size == config['n_embd']
         self.max_length = K
         self.max_ep_len = max_ep_len
@@ -229,13 +233,19 @@ class DecisionTransformer(nn.Module):
     def take_actions(self, state, target_return=None, pre_reward=None):
         self.eval()
         dev = self.state_mean.device
+        # init_eval() runs during construction, before callers commonly move the
+        # model to CUDA. Recreate an unused cache on the model's current device.
+        if self.eval_actions.device != dev:
+            if self.eval_states is not None:
+                raise RuntimeError("Cannot move an active DT evaluation episode between devices; call init_eval().")
+            self.init_eval()
         if self.eval_states is None:
-            self.eval_states = torch.from_numpy(state).reshape(1, self.state_dim).to(dev)
+            self.eval_states = torch.as_tensor(state, dtype=torch.float32, device=dev).reshape(1, self.state_dim)
             ep_return = target_return if target_return is not None else self.target_return
             self.eval_target_return = torch.tensor(ep_return, dtype=torch.float32, device=dev).reshape(1, 1)
         else:
             assert pre_reward is not None
-            cur_state = torch.from_numpy(state).reshape(1, self.state_dim).to(dev)
+            cur_state = torch.as_tensor(state, dtype=torch.float32, device=dev).reshape(1, self.state_dim)
             self.eval_states = torch.cat([self.eval_states, cur_state], dim=0)
             self.eval_rewards[-1] = pre_reward
             pred_return = self.eval_target_return[0, -1] - (pre_reward / self.scale)
