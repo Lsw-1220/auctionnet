@@ -100,7 +100,7 @@ class IqlBiddingStrategy(BaseBiddingStrategy):
 
         test_state = torch.tensor(test_state, dtype=torch.float)
         alpha = self.model(test_state)
-        alpha = alpha.cpu().numpy()
+        alpha = alpha.detach().cpu().numpy()
         bids = alpha * pValues
 
         return bids

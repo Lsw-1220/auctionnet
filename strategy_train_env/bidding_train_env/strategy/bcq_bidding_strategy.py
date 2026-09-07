@@ -27,7 +27,13 @@ class BcqBiddingStrategy(BaseBiddingStrategy):
         model_path = os.path.join(model_dir, "bcq_model.pth")
         dict_path = os.path.join(model_dir, "normalize_dict.pkl")
         #self.model = torch.load(model_path)
-        self.model = torch.jit.load(model_path)
+        model_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = torch.jit.load(model_path, map_location=model_device)
+        self.model.to(model_device)
+        # The exported wrapper and its VAE persist their own device fields.
+        for _, module in self.model.named_modules():
+            if hasattr(module, 'device'):
+                module.device = model_device
         with open(dict_path, 'rb') as file:
             self.normalize_dict = pickle.load(file)
 

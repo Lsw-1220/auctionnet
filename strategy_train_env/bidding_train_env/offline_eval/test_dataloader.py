@@ -25,8 +25,28 @@ class TestDataLoader:
         basename = os.path.splitext(os.path.basename(file_path))[0]
         self.raw_data_path = os.path.join(os.path.dirname(file_path),
                                           f"{basename}_raw_data.pickle")
-        self.raw_data = self._get_raw_data()
-        self.keys, self.test_dict = self._get_test_data_dict()
+        self.episode_cache_path = os.path.join(os.path.dirname(file_path),
+                                               f"{basename}.episodes.pkl")
+        self.raw_data = None
+        self.test_dict = self._get_episode_cache()
+        if self.test_dict is None:
+            self.raw_data = self._get_raw_data()
+            self.keys, self.test_dict = self._get_test_data_dict()
+        else:
+            self.keys = list(self.test_dict.keys())
+
+    def _get_episode_cache(self):
+        """Load the compact v2 episode cache when one is available."""
+        if not os.path.exists(self.episode_cache_path):
+            return None
+        with open(self.episode_cache_path, 'rb') as file:
+            payload = pickle.load(file)
+        source_stat = os.stat(self.file_path)
+        if (payload.get('version') == 2 and
+                payload.get('source_size') == source_stat.st_size and
+                payload.get('source_mtime_ns') == source_stat.st_mtime_ns):
+            return payload['episodes']
+        return None
 
     def _get_raw_data(self):
         """
@@ -62,6 +82,8 @@ class TestDataLoader:
         Get training data based on deliveryPeriodIndex and advertiserNumber, and construct the test data.
         """
         data = self.test_dict[key]
+        if isinstance(data, tuple):
+            return data[:4]
         pValues = data.groupby('timeStepIndex')['pValue'].apply(list).apply(np.array).tolist()
         pValueSigmas = data.groupby('timeStepIndex')['pValueSigma'].apply(list).apply(np.array).tolist()
         leastWinningCosts = data.groupby('timeStepIndex')['leastWinningCost'].apply(list).apply(np.array).tolist()

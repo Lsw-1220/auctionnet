@@ -108,7 +108,6 @@ class GAVEAuctionNetAgent(AuctionNetBase):
         block_config:      dict
         device:            str (default 'cpu')
         expectile:         float (default 0.99)
-        score_target_mode: 'next' | 'prev' (default 'prev')
     """
 
     def __init__(self, budget=100, name="GAVE-AuctionNet", cpa=2, category=1,
@@ -139,7 +138,6 @@ class GAVEAuctionNetAgent(AuctionNetBase):
             time_dim=model_param.get('time_dim', 8),
             block_config=model_param['block_config'],
             expectile=model_param.get('expectile', 0.99),
-            score_target_mode=model_param.get('score_target_mode', 'prev'),
         )
         ckpt = os.path.join(model_param['save_dir'],
                             model_param.get('ckpt_name', 'complete_train.pt'))
@@ -148,11 +146,9 @@ class GAVEAuctionNetAgent(AuctionNetBase):
         self._gave_model.eval()
 
         self._device = device
-        self._prev_conv = None
 
     def reset(self):
         self.remaining_budget = self.budget
-        self._prev_conv = None
         self._gave_model.init_eval()
 
     def bidding(self, timeStepIndex, pValues, pValueSigmas,
@@ -163,7 +159,6 @@ class GAVEAuctionNetAgent(AuctionNetBase):
 
         if timeStepIndex == 0:
             self._gave_model.init_eval()
-            self._prev_conv = None
 
         state = _build_state_16(
             timeStepIndex, self.remaining_budget, self.budget,
@@ -171,19 +166,18 @@ class GAVEAuctionNetAgent(AuctionNetBase):
             historyImpressionResult, historyLeastWinningCost,
             historyPValueInfo)
 
-        pre_reward = self._prev_conv
+        history_conversion = [
+            np.asarray(result)[:, 1] for result in historyImpressionResult
+        ]
+        pre_reward = (
+            float(np.sum(history_conversion[-1]))
+            if history_conversion else None
+        )
 
         alpha = float(np.asarray(
             self._gave_model.take_actions(
                 state, budget=self.budget, cpa=self.cpa, pre_reward=pre_reward)
         ).reshape(-1)[0])
-
-        # track prev conversion for next tick
-        if historyImpressionResult:
-            last = np.asarray(historyImpressionResult[-1], dtype=np.float32)
-            self._prev_conv = float(last[:, 1].sum())  # col 1 = conversionAction
-        else:
-            self._prev_conv = 0.0
 
         return alpha * np.asarray(pValues, dtype=np.float64)
 
@@ -968,6 +962,96 @@ class DTAuctionNetAgent(AuctionNetBase):
                 pre_reward=pre_reward)
         ).reshape(-1)[0])
 
+        return alpha * np.asarray(pValues, dtype=np.float64)
+
+
+class GASAuctionNetAgent(AuctionNetBase):
+    """GAS reweighted Decision Transformer agent for AuctionNet benchmarks.
+
+    ``save_dir`` must contain the GAS ``dt.pt`` and ``normalize_dict.pkl``.
+    The model source is loaded from the GAS repository because its reweighted
+    four-token architecture is not compatible with AuctionNet's vanilla DT.
+    """
+
+    def __init__(self, budget=100, name="GAS-AuctionNet", cpa=2, category=1,
+                 model_param=None):
+        super().__init__(budget=budget, name=name, cpa=cpa, category=category)
+        if model_param is None:
+            model_param = {}
+
+        import importlib.util
+        import pickle
+        import torch
+
+        device = model_param.get('device', 'cpu')
+        gas_root = model_param.get(
+            'gas_root', 'D:/research/Experiment/GAS_WWW-25')
+        dt_path = os.path.join(
+            gas_root, 'bidding_train_env', 'baseline', 'dt_baselines',
+            'dt_baselines.py')
+        spec = importlib.util.spec_from_file_location('_gas_dt_module', dt_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        save_dir = model_param['save_dir']
+        with open(os.path.join(save_dir, 'normalize_dict.pkl'), 'rb') as f:
+            normalize = pickle.load(f)
+
+        reweight_w = model_param.get('reweight_w', 0.2)
+        self._model = module.DecisionTransformer(
+            state_dim=16,
+            act_dim=1,
+            state_mean=np.asarray(normalize['state_mean'], dtype=np.float32),
+            state_std=np.asarray(normalize['state_std'], dtype=np.float32),
+            K=model_param.get('K', 10),
+            max_ep_len=model_param.get('max_ep_len', 48),
+            scale=model_param.get('scale', 2000),
+            target_return=1.0 + reweight_w,
+            target_ctg=1.0,
+            baseline_method='dt_reweight',
+            reweight_w=reweight_w,
+            device=device,
+        )
+        self._model.load_net(os.path.join(save_dir, 'dt.pt'), device=device)
+        self._model.to(device)
+        self._model.device = device
+        self._device = device
+        self._remaining_budget_last = self.budget
+
+    def reset(self):
+        self.remaining_budget = self.budget
+        self._remaining_budget_last = self.budget
+        self._model.init_eval()
+
+    def bidding(self, timeStepIndex, pValues, pValueSigmas,
+                historyPValueInfo, historyBid,
+                historyAuctionResult, historyImpressionResult,
+                historyLeastWinningCost):
+        if timeStepIndex == 0:
+            self._model.init_eval()
+            self._remaining_budget_last = self.budget
+
+        state = _build_state_16(
+            timeStepIndex, self.remaining_budget, self.budget,
+            pValues, historyBid, historyAuctionResult,
+            historyImpressionResult, historyLeastWinningCost,
+            historyPValueInfo)
+
+        pre_reward = None
+        pre_cost = None
+        if historyImpressionResult:
+            last = np.asarray(historyImpressionResult[-1], dtype=np.float32)
+            pre_reward = float(last[:, 1].sum())
+            pre_cost = float(self._remaining_budget_last - self.remaining_budget)
+
+        alpha = float(np.asarray(self._model.take_actions(
+            state,
+            actual_excuted_action=None,
+            pre_reward=pre_reward,
+            pre_cost=pre_cost,
+            cpa_constrain=self.cpa,
+        )).reshape(-1)[0])
+        self._remaining_budget_last = self.remaining_budget
         return alpha * np.asarray(pValues, dtype=np.float64)
 
 

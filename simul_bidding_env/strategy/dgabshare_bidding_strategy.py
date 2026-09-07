@@ -58,6 +58,17 @@ class DGABShareStrategy(BaseBiddingStrategy):
             model_param = {}
 
         device = model_param.get('device', 'cpu')
+        self.exploration_scale = float(model_param.get('exploration_scale', 0.0))
+        self.exploration_rho = float(model_param.get('exploration_rho', 0.8))
+        self.exploration_seed = int(model_param.get('exploration_seed', 0))
+        self.exploration_min_ratio = float(model_param.get('exploration_min_ratio', 0.8))
+        self.exploration_max_ratio = float(model_param.get('exploration_max_ratio', 1.2))
+        if self.exploration_scale < 0:
+            raise ValueError("exploration_scale must be >= 0")
+        if not 0 <= self.exploration_rho < 1:
+            raise ValueError("exploration_rho must be in [0, 1)")
+        if not 0 < self.exploration_min_ratio <= 1 <= self.exploration_max_ratio:
+            raise ValueError("exploration ratio bounds must straddle 1")
         self.v_goal_multiplier = float(model_param.get('v_goal_multiplier', 1.0))
         if not np.isfinite(self.v_goal_multiplier) or self.v_goal_multiplier <= 0:
             raise ValueError("v_goal_multiplier must be finite and > 0")
@@ -113,10 +124,14 @@ class DGABShareStrategy(BaseBiddingStrategy):
             device=device,
         )
         self._builder = StateBuilder16(num_steps=48)
+        self._exploration_rng = np.random.default_rng(self.exploration_seed)
+        self._exploration_state = 0.0
 
     def reset(self):
         self.remaining_budget = self.budget
         self._builder = StateBuilder16(num_steps=48)
+        self._exploration_rng = np.random.default_rng(self.exploration_seed)
+        self._exploration_state = 0.0
         self.rollout.__init__(
             self.rollout.actor,
             V_goal=self.v_goal_multiplier * self.budget / (self.cpa + EPS),
@@ -155,12 +170,31 @@ class DGABShareStrategy(BaseBiddingStrategy):
             self.rollout.update_rtg(v_prev, c_prev)
 
         action_norm = float(np.asarray(self.rollout.act(state_norm)).reshape(-1)[0])
-        alpha = float(np.clip(action_norm * self.action_std + self.action_mean,
-                              0.0, self.action_upper))
+        base_alpha = float(np.clip(action_norm * self.action_std + self.action_mean,
+                                   0.0, self.action_upper))
+        if self.exploration_scale > 0:
+            innovation_scale = self.exploration_scale * np.sqrt(
+                max(1.0 - self.exploration_rho ** 2, 0.0))
+            self._exploration_state = (
+                self.exploration_rho * self._exploration_state
+                + float(self._exploration_rng.normal(0.0, innovation_scale)))
+            exploration_ratio = float(np.clip(
+                np.exp(self._exploration_state),
+                self.exploration_min_ratio, self.exploration_max_ratio))
+        else:
+            exploration_ratio = 1.0
+        alpha = float(np.clip(base_alpha * exploration_ratio, 0.0, self.action_upper))
         rtg_now = self.rollout.rtg.detach().cpu().numpy()
         abs_state = np.abs(state_norm)
         self.last_diagnostics = {
             'alpha': alpha,
+            'executed_alpha': alpha,
+            'base_alpha': base_alpha,
+            'action_norm': action_norm,
+            'exploration_ratio': exploration_ratio,
+            'exploration_noise': self._exploration_state,
+            'state_raw': state_raw.tolist(),
+            'state_normalized': state_norm.tolist(),
             'v_goal_multiplier': self.v_goal_multiplier,
             'rtg_v': float(rtg_now[0]),
             'rtg_c': float(rtg_now[1]),
@@ -187,5 +221,3 @@ class DGABShareStrategy(BaseBiddingStrategy):
             self._builder.update(last_bid, last_lwc, tick_status, tick_conv, pv_vals)
 
         return alpha * pValues
-
-

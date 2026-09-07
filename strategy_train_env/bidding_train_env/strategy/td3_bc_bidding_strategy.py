@@ -29,7 +29,12 @@ class TD3_BCBiddingStrategy(BaseBiddingStrategy):
         model_dir = model_dir or os.path.join(dir_name, "saved_model", "TD3_bctest")
         model_path = os.path.join(model_dir, "td3_bc_model.pth")
         dict_path = os.path.join(model_dir, "normalize_dict.pkl")
-        self.model = torch.jit.load(model_path)
+        model_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = torch.jit.load(model_path, map_location=model_device)
+        self.model.to(model_device)
+        for _, module in self.model.named_modules():
+            if hasattr(module, 'device'):
+                module.device = model_device
         with open(dict_path, 'rb') as file:
             self.normalize_dict = pickle.load(file)
 
@@ -126,4 +131,3 @@ class TD3_BCBiddingStrategy(BaseBiddingStrategy):
         bids = alpha * pValues
 
         return bids
-

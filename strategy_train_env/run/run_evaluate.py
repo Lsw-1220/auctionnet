@@ -21,12 +21,13 @@ def getScore_neurips(reward, cpa, cpa_constraint):
     return penalty * reward
 
 
-def run_test(test_data='data/traffic/period-12.csv', agent=None):
+def run_test(test_data='data/traffic/period-12.csv', agent=None, data_loader=None,
+             return_details=False):
     """
     offline evaluation
     """
 
-    data_loader = TestDataLoader(file_path=test_data)
+    data_loader = data_loader or TestDataLoader(file_path=test_data)
     env = OfflineEnv()
     if agent is None:
         from bidding_train_env.strategy import PlayerBiddingStrategy
@@ -35,14 +36,19 @@ def run_test(test_data='data/traffic/period-12.csv', agent=None):
 
     keys, test_dict = data_loader.keys, data_loader.test_dict
     all_scores, all_rewards, all_costs, all_cpas = [], [], [], []
+    details = []
 
     for key in keys:
         period, advertiser = int(key[0]), int(key[1])
         # Set budget/CPA from data for each advertiser
         adv_data = test_dict[key]
-        agent.budget = adv_data['budget'].iloc[0]
-        agent.cpa = adv_data['CPAConstraint'].iloc[0]
-        agent.category = int(adv_data['advertiserCategoryIndex'].iloc[0])
+        if isinstance(adv_data, tuple):
+            _, _, _, _, budget, cpa, category = adv_data
+            agent.budget, agent.cpa, agent.category = budget, cpa, category
+        else:
+            agent.budget = adv_data['budget'].iloc[0]
+            agent.cpa = adv_data['CPAConstraint'].iloc[0]
+            agent.category = int(adv_data['advertiserCategoryIndex'].iloc[0])
         agent.reset()
         num_timeStepIndex, pValues, pValueSigmas, leastWinningCosts = data_loader.mock_data(key)
         rewards = np.zeros(num_timeStepIndex)
@@ -105,6 +111,12 @@ def run_test(test_data='data/traffic/period-12.csv', agent=None):
         all_rewards.append(all_reward)
         all_costs.append(all_cost)
         all_cpas.append(cpa_real)
+        details.append({
+            'period': period, 'advertiser': advertiser, 'score': float(score),
+            'reward': float(all_reward), 'cost': float(all_cost),
+            'cpa': float(cpa_real), 'cpa_constraint': float(cpa_constraint),
+            'budget': float(agent.budget), 'num_ticks': int(num_timeStepIndex),
+        })
         logger.info(f'Period {period} Adv {advertiser}: score={score:.2f} reward={all_reward} '
                     f'cpa={cpa_real:.2f} budget_used={all_cost/agent.budget:.0%}')
 
@@ -115,12 +127,15 @@ def run_test(test_data='data/traffic/period-12.csv', agent=None):
     logger.info(f'  Avg Score:  {np.mean(all_scores):.2f}')
     logger.info(f'  Avg Reward: {np.mean(all_rewards):.1f}')
     logger.info(f'  Avg CPA:    {np.mean(all_cpas):.2f}')
-    return {
+    metrics = {
         'score': float(np.mean(all_scores)),
         'reward': float(np.mean(all_rewards)),
         'cost': float(np.mean(all_costs)),
         'cpa': float(np.mean(all_cpas)),
     }
+    if return_details:
+        return metrics, details
+    return metrics
 
 
 if __name__ == '__main__':
