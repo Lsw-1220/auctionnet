@@ -141,6 +141,14 @@ def save_training_checkpoint(model, save_dir, step, normalize_dict, method='save
     checkpoint_dir = os.path.join(save_dir, f'checkpoint_{step:08d}')
     save_normalize_dict(normalize_dict, checkpoint_dir)
     base_model = model.module if isinstance(model, torch.nn.DataParallel) else model
+
+    # State-dict based saves do not mutate the model or its device, so copying the
+    # complete module is unnecessary.  A trained module can also own non-leaf
+    # tensors (for example through optimizer state), which PyTorch cannot deepcopy.
+    if method == 'save_net':
+        base_model.save_net(checkpoint_dir)
+        return checkpoint_dir
+
     snapshot = deepcopy(base_model)
     getattr(snapshot, method)(checkpoint_dir)
     return checkpoint_dir
