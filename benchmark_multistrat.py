@@ -667,6 +667,7 @@ def main():
                 elapsed = time.time() - t0
                 done += 1
                 res['pvalue_mean_base'] = pv_val
+                res['budget_rate'] = args.budget_rate
                 res['strategy'] = name
                 res['advertiser'] = adv
                 res['episode'] = episode
