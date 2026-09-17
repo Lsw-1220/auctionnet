@@ -43,6 +43,11 @@ def parse_args():
     )
     parser.add_argument("--dgabshare_ckpt", default="step_26000.pt")
     parser.add_argument("--v_goal_multiplier", type=float, default=15.0)
+    parser.add_argument(
+        "--qga_dir",
+        default=project_path("saved_model", "QGA_dense", "QGA"),
+    )
+    parser.add_argument("--qga_ckpt_step", type=int, default=6000)
     return parser.parse_args()
 
 
@@ -62,26 +67,45 @@ def require_file(path):
         raise FileNotFoundError(path)
 
 
-for required_path in [
+required_paths = [
+    # The dense opponent population always uses these four trained policies.
     os.path.join(BC_DIR, "bc_model.pth"),
     os.path.join(BC_DIR, "normalize_dict.pkl"),
     os.path.join(BCQ_DIR, "bcq_model.pth"),
     os.path.join(BCQ_DIR, "normalize_dict.pkl"),
-    os.path.join(DT_DIR, "dt.pt"),
-    os.path.join(DT_DIR, "normalize_dict.pkl"),
-    os.path.join(GUIDE_DIR, "GUIDE.pt"),
-    os.path.join(GUIDE_DIR, "GUIDE_critic_inverse.pt"),
-    os.path.join(GUIDE_DIR, "GUIDE_idm.pt"),
-    GUIDE_NORMALIZE,
     os.path.join(TD3_BC_DIR, "td3_bc_model.pth"),
     os.path.join(TD3_BC_DIR, "normalize_dict.pkl"),
     os.path.join(IQL_DIR, "iql_model.pth"),
     os.path.join(IQL_DIR, "normalize_dict.pkl"),
-    os.path.join(args.dgabshare_dir, args.dgabshare_ckpt),
-    os.path.join(args.dgabshare_dir, "normalize_dict.pkl"),
-]:
-    require_file(required_path)
+]
 
+selected_strategies = set(args.strategies)
+if "DT" in selected_strategies:
+    required_paths.extend([
+        os.path.join(DT_DIR, "dt.pt"),
+        os.path.join(DT_DIR, "normalize_dict.pkl"),
+    ])
+if "GUIDE" in selected_strategies:
+    required_paths.extend([
+        os.path.join(GUIDE_DIR, "GUIDE.pt"),
+        os.path.join(GUIDE_DIR, "GUIDE_critic_inverse.pt"),
+        os.path.join(GUIDE_DIR, "GUIDE_idm.pt"),
+        GUIDE_NORMALIZE,
+    ])
+if selected_strategies.intersection({"DGABShare", "DGABShare_26000"}):
+    required_paths.extend([
+        os.path.join(args.dgabshare_dir, args.dgabshare_ckpt),
+        os.path.join(args.dgabshare_dir, "normalize_dict.pkl"),
+    ])
+if "QGA" in selected_strategies:
+    required_paths.extend([
+        os.path.join(args.qga_dir, "normalize_dict.pkl"),
+        os.path.join(args.qga_dir, "checkpoints", f"actor_step_{args.qga_ckpt_step}.pt"),
+        os.path.join(args.qga_dir, "checkpoints", f"critic_step_{args.qga_ckpt_step}.pt"),
+    ])
+
+for required_path in required_paths:
+    require_file(required_path)
 
 original_initialize_agents = benchmark.Controller.initialize_agents
 
@@ -151,6 +175,8 @@ def make_dgabshare_v15(budget, cpa, category, exploration_seed=0, **kwargs):
 
 
 strategy_map = dict(benchmark.ALL_STRATEGIES)
+strategy_map["PID"] = benchmark.make_pid
+strategy_map["QGA"] = benchmark.make_qga
 strategy_map["DT"] = benchmark.make_dt
 strategy_map["GUIDE"] = make_guide_dense
 strategy_map["DGABShare"] = make_dgabshare_v15
@@ -172,6 +198,8 @@ benchmark_args = [
     "--iql_dir", IQL_DIR,
     "--dgabshare_dir", args.dgabshare_dir,
     "--dgabshare_ckpt", args.dgabshare_ckpt,
+    "--qga_dir", args.qga_dir,
+    "--qga_ckpt_step", str(args.qga_ckpt_step),
     "--device", args.device,
     "--seed", str(args.seed),
     "--output", args.output,

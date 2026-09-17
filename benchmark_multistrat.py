@@ -84,8 +84,8 @@ DGABSHARE_CKPT = 'step_15000.pt'
 EXPLORATION_SCALE = 0.0
 EXPLORATION_RHO = 0.8
 GAS_SAVE_DIR = 'D:/research/Experiment/GAS_WWW-25/results/gas_dt_reweight_b48_s400000/checkpoints/step_280000'
-QGA_SAVE_DIR = 'D:/research/Experiment/QGA/strategy_train_env/saved_model'
-QGA_CKPT_STEP = 13000
+QGA_SAVE_DIR = './saved_model/QGA_dense/QGA'
+QGA_CKPT_STEP = 6000
 SEMBID_ROOT = 'D:/research/Experiment/SemBid-CIKM2026'
 SEMBID_SAVE_DIR = os.path.join(SEMBID_ROOT, 'reproduction', 'sembid_200k', 'model_batch48_200k', 'checkpoint_50000')
 SEMBID_EMBEDDING_LOOKUP = os.path.join(SEMBID_ROOT, 'reproduction', 'sembid_200k', 'embedding_lookup.pkl')
@@ -304,22 +304,6 @@ def make_gas(budget, cpa, category, **kw):
 
 def make_qga(budget, cpa, category, **kw):
     """Build the QGA agent and adapt its (bids, alpha) return to AuctionNet."""
-    qga_package = os.path.join(
-        os.path.dirname(QGA_SAVE_DIR), 'bidding_train_env')
-
-    # AuctionNet has its own bidding_train_env package. Extend its package search
-    # paths so the separately checked-out QGA implementation can coexist with it.
-    import bidding_train_env
-    import bidding_train_env.baseline
-    import bidding_train_env.strategy
-    for package, extra_path in (
-        (bidding_train_env, qga_package),
-        (bidding_train_env.baseline, os.path.join(qga_package, 'baseline')),
-        (bidding_train_env.strategy, os.path.join(qga_package, 'strategy')),
-    ):
-        if extra_path not in package.__path__:
-            package.__path__.append(extra_path)
-
     from bidding_train_env.strategy.qga_bidding_strategy import QGAStrategy
 
     actor_path = os.path.join(
@@ -335,6 +319,7 @@ def make_qga(budget, cpa, category, **kw):
     return QGAAuctionNetAdapter(
         budget=budget, cpa=cpa, category=category, name='QGA',
         load_dir=QGA_SAVE_DIR, actor_path=actor_path, critic_path=critic_path,
+        device=DEVICE,
     )
 
 
@@ -406,6 +391,7 @@ def make_sembid(budget, cpa, category, **kw):
 
 
 ALL_STRATEGIES = [
+    ('PID', make_pid),
     ('GAVE', make_gave),
     ('BC', make_bc),
     ('BCQ', make_bcq),
