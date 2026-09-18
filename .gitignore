@@ -26,6 +26,7 @@ __pycache__/
 # User checkpoints
 /saved_model/
 /server_qga_pid_models_20260917/
+/server_dgab_sparse_models_20260919/
 *.sh
 /log/
 

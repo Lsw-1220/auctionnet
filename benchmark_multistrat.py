@@ -83,6 +83,7 @@ DGABSHARE_SAVE_DIR = './saved_model/dgabshare_full'
 DGABSHARE_CKPT = 'step_15000.pt'
 EXPLORATION_SCALE = 0.0
 EXPLORATION_RHO = 0.8
+V_GOAL_MULTIPLIER = 1.0
 GAS_SAVE_DIR = 'D:/research/Experiment/GAS_WWW-25/results/gas_dt_reweight_b48_s400000/checkpoints/step_280000'
 QGA_SAVE_DIR = './saved_model/QGA_dense/QGA'
 QGA_CKPT_STEP = 6000
@@ -128,6 +129,8 @@ def parse_args():
                     help='DGABShare AR(1) log-action exploration std; 0 disables it')
     ap.add_argument('--exploration_rho', type=float, default=0.8,
                     help='DGABShare AR(1) exploration correlation')
+    ap.add_argument('--v_goal_multiplier', type=float, default=V_GOAL_MULTIPLIER,
+                    help='DGABShare value-goal multiplier (default: 1.0)')
     ap.add_argument('--trajectory_output', type=str, default='',
                     help='Optional per-tick CSV path for post-training trajectories')
     ap.add_argument('--fail_fast', action='store_true',
@@ -281,7 +284,8 @@ def make_dgabshare(budget, cpa, category, **kw):
         name='DGABShare',
         model_param=dict(
             save_dir=DGABSHARE_SAVE_DIR, ckpt_name=DGABSHARE_CKPT, device=DEVICE,
-            K=20, exploration_scale=EXPLORATION_SCALE,
+            K=20, v_goal_multiplier=V_GOAL_MULTIPLIER,
+            exploration_scale=EXPLORATION_SCALE,
             exploration_rho=EXPLORATION_RHO,
             exploration_seed=int(kw.get('exploration_seed', 0)),
             exploration_min_ratio=0.8, exploration_max_ratio=1.2,
@@ -559,7 +563,7 @@ def run_one_episode(controller, player_index, agent_factory, pvalue_mean_base,
 # ═══════════════════════════════════════════════
 
 def main():
-    global DEVICE, GAVE_SAVE_DIR, DGAB_SAVE_DIR, VGAB_SAVE_DIR, DT_SAVE_DIR, IQL_SAVE_DIR, BC_SAVE_DIR, BCQ_SAVE_DIR, TD3_BC_SAVE_DIR, GUIDE_SAVE_DIR, DGABSHARE_SAVE_DIR, DGABSHARE_CKPT, GAS_SAVE_DIR, QGA_SAVE_DIR, QGA_CKPT_STEP, SEMBID_SAVE_DIR, SEMBID_EMBEDDING_LOOKUP, OUTPUT_DIR, EXPLORATION_SCALE, EXPLORATION_RHO
+    global DEVICE, GAVE_SAVE_DIR, DGAB_SAVE_DIR, VGAB_SAVE_DIR, DT_SAVE_DIR, IQL_SAVE_DIR, BC_SAVE_DIR, BCQ_SAVE_DIR, TD3_BC_SAVE_DIR, GUIDE_SAVE_DIR, DGABSHARE_SAVE_DIR, DGABSHARE_CKPT, GAS_SAVE_DIR, QGA_SAVE_DIR, QGA_CKPT_STEP, SEMBID_SAVE_DIR, SEMBID_EMBEDDING_LOOKUP, OUTPUT_DIR, EXPLORATION_SCALE, EXPLORATION_RHO, V_GOAL_MULTIPLIER
 
     args = parse_args()
 
@@ -587,6 +591,7 @@ def main():
     DGABSHARE_CKPT = args.dgabshare_ckpt
     EXPLORATION_SCALE = args.exploration_scale
     EXPLORATION_RHO = args.exploration_rho
+    V_GOAL_MULTIPLIER = args.v_goal_multiplier
     if args.gas_dir: GAS_SAVE_DIR = args.gas_dir
     if args.qga_dir: QGA_SAVE_DIR = args.qga_dir
     QGA_CKPT_STEP = args.qga_ckpt_step
