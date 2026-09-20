@@ -5,6 +5,8 @@ import builtins
 import os
 import sys
 
+import numpy as np
+
 import benchmark_multistrat as benchmark
 
 from bidding_train_env.strategy.bc_bidding_strategy import BcBiddingStrategy
@@ -37,12 +39,15 @@ def parse_args():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--output", required=True)
     parser.add_argument("--output_dir")
+    parser.add_argument("--gave_dir", default=benchmark.GAVE_SAVE_DIR)
+    parser.add_argument("--gave_ckpt", default="step_5000.pt")
     parser.add_argument(
         "--dgabshare_dir",
         default=project_path("saved_model", "dgab_shared_20260912135525"),
     )
     parser.add_argument("--dgabshare_ckpt", default="step_26000.pt")
     parser.add_argument("--v_goal_multiplier", type=float, default=15.0)
+    parser.add_argument("--action_multiplier", type=float, default=1.0)
     parser.add_argument(
         "--qga_dir",
         default=project_path("saved_model", "QGA_dense", "QGA"),
@@ -80,6 +85,11 @@ required_paths = [
 ]
 
 selected_strategies = set(args.strategies)
+if "GAVE" in selected_strategies:
+    required_paths.extend([
+        os.path.join(args.gave_dir, args.gave_ckpt),
+        os.path.join(args.gave_dir, "normalize_dict.pkl"),
+    ])
 if "DT" in selected_strategies:
     required_paths.extend([
         os.path.join(DT_DIR, "dt.pt"),
@@ -128,6 +138,23 @@ def initialize_dense_opponents(self):
 benchmark.Controller.initialize_agents = initialize_dense_opponents
 
 
+def make_gave_checkpoint(budget, cpa, category, **kwargs):
+    return benchmark.GAVEAuctionNetAgent(
+        budget=budget,
+        cpa=cpa,
+        category=category,
+        name="GAVE-Player",
+        model_param={
+            "save_dir": args.gave_dir,
+            "ckpt_name": args.gave_ckpt,
+            "hidden_size": 512,
+            "time_dim": 8,
+            "block_config": benchmark.BLOCK_CONFIG,
+            "device": benchmark.DEVICE,
+            "expectile": 0.99,
+        },
+    )
+
 def make_guide_dense(budget, cpa, category, **kwargs):
     original_open = builtins.open
     checkpoint_normalize = os.path.abspath(os.path.join(GUIDE_DIR, "normalize_dict.pkl"))
@@ -153,12 +180,35 @@ def make_guide_dense(budget, cpa, category, **kwargs):
         builtins.open = original_open
 
 
+class CalibratedDGABShareStrategy(DGABShareStrategy):
+    def __init__(self, *strategy_args, action_multiplier=1.0, **strategy_kwargs):
+        self.action_multiplier = float(action_multiplier)
+        if not np.isfinite(self.action_multiplier) or self.action_multiplier <= 0:
+            raise ValueError("action_multiplier must be finite and > 0")
+        super().__init__(*strategy_args, **strategy_kwargs)
+
+    def bidding(self, *bid_args, **bid_kwargs):
+        pvalues = np.asarray(bid_args[1], dtype=np.float32)
+        super().bidding(*bid_args, **bid_kwargs)
+        original_alpha = float(self.last_diagnostics["alpha"])
+        calibrated_alpha = float(np.clip(
+            original_alpha * self.action_multiplier, 0.0, self.action_upper))
+        self.last_diagnostics.update(
+            uncalibrated_alpha=original_alpha,
+            action_multiplier=self.action_multiplier,
+            alpha=calibrated_alpha,
+            executed_alpha=calibrated_alpha,
+        )
+        return calibrated_alpha * pvalues
+
+
 def make_dgabshare_v15(budget, cpa, category, exploration_seed=0, **kwargs):
-    return DGABShareStrategy(
+    return CalibratedDGABShareStrategy(
         budget=budget,
         cpa=cpa,
         category=category,
         name="DGABShare",
+        action_multiplier=args.action_multiplier,
         model_param={
             "save_dir": args.dgabshare_dir,
             "ckpt_name": args.dgabshare_ckpt,
@@ -175,6 +225,7 @@ def make_dgabshare_v15(budget, cpa, category, exploration_seed=0, **kwargs):
 
 
 strategy_map = dict(benchmark.ALL_STRATEGIES)
+strategy_map["GAVE"] = make_gave_checkpoint
 strategy_map["PID"] = benchmark.make_pid
 strategy_map["QGA"] = benchmark.make_qga
 strategy_map["DT"] = benchmark.make_dt
@@ -190,6 +241,7 @@ benchmark_args = [
     "--budget_rate", str(args.budget_rate),
     "--episodes", *[str(episode) for episode in args.episodes],
     "--strategies", *args.strategies,
+    "--gave_dir", args.gave_dir,
     "--bc_dir", BC_DIR,
     "--bcq_dir", BCQ_DIR,
     "--dt_dir", DT_DIR,
