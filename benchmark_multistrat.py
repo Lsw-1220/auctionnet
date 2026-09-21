@@ -55,7 +55,7 @@ from run.run_test import adjust_over_cost, get_winner
 from simul_bidding_env.Controller.Controller import Controller
 from simul_bidding_env.strategy.autobidding_agents import (
     GAVEAuctionNetAgent, DGABFOAuctionNetAgent, DTAuctionNetAgent,
-    GASAuctionNetAgent,
+    GASAuctionNetAgent, GASPaperAuctionNetAgent,
 )
 from simul_bidding_env.strategy.vgab_bidding_strategy import VGABStrategy
 from simul_bidding_env.strategy.dgabshare_bidding_strategy import DGABShareStrategy
@@ -294,14 +294,14 @@ def make_dgabshare(budget, cpa, category, **kw):
 
 
 def make_gas(budget, cpa, category, **kw):
-    return GASAuctionNetAgent(
+    return GASPaperAuctionNetAgent(
         budget=budget, cpa=cpa, category=category,
         name='GAS',
         model_param=dict(
-            save_dir=GAS_SAVE_DIR,
-            gas_root='D:/research/Experiment/GAS_WWW-25',
+            bundle_dir=GAS_SAVE_DIR,
             device=DEVICE,
-            reweight_w=0.2,
+            action_num=5,
+            seed=int(kw.get('exploration_seed', 42)),
         ),
     )
 

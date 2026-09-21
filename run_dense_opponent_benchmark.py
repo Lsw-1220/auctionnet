@@ -42,6 +42,10 @@ def parse_args():
     parser.add_argument("--gave_dir", default=benchmark.GAVE_SAVE_DIR)
     parser.add_argument("--gave_ckpt", default="step_5000.pt")
     parser.add_argument(
+        "--gas_dir",
+        default=project_path("saved_model", "GAS_dense", "gas_paper_400k_2729782"),
+    )
+    parser.add_argument(
         "--dgabshare_dir",
         default=project_path("saved_model", "dgab_shared_20260912135525"),
     )
@@ -90,6 +94,16 @@ if "GAVE" in selected_strategies:
         os.path.join(args.gave_dir, args.gave_ckpt),
         os.path.join(args.gave_dir, "normalize_dict.pkl"),
     ])
+if "GAS" in selected_strategies:
+    required_paths.append(os.path.join(args.gas_dir, "best_model.json"))
+    for gas_kind in ("policy", "critic_101", "critic_202", "critic_303"):
+        gas_step_dir = os.path.join(
+            args.gas_dir, gas_kind, "checkpoints", "step_250000")
+        required_paths.extend([
+            os.path.join(gas_step_dir, "dt.pt"),
+            os.path.join(gas_step_dir, "model.json"),
+            os.path.join(gas_step_dir, "normalization.npz"),
+        ])
 if "DT" in selected_strategies:
     required_paths.extend([
         os.path.join(DT_DIR, "dt.pt"),
@@ -226,6 +240,7 @@ def make_dgabshare_v15(budget, cpa, category, exploration_seed=0, **kwargs):
 
 strategy_map = dict(benchmark.ALL_STRATEGIES)
 strategy_map["GAVE"] = make_gave_checkpoint
+strategy_map["GAS"] = benchmark.make_gas
 strategy_map["PID"] = benchmark.make_pid
 strategy_map["QGA"] = benchmark.make_qga
 strategy_map["DT"] = benchmark.make_dt
@@ -242,6 +257,7 @@ benchmark_args = [
     "--episodes", *[str(episode) for episode in args.episodes],
     "--strategies", *args.strategies,
     "--gave_dir", args.gave_dir,
+    "--gas_dir", args.gas_dir,
     "--bc_dir", BC_DIR,
     "--bcq_dir", BCQ_DIR,
     "--dt_dir", DT_DIR,

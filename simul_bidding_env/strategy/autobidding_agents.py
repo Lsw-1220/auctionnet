@@ -1059,6 +1059,87 @@ class GASAuctionNetAgent(AuctionNetBase):
 # DGAB-PO Ensemble Agent (R2 + R5 sparsity-gated)
 # ──────────────────────────────────────────────
 
+class GASPaperAuctionNetAgent(AuctionNetBase):
+    """GAS-infer agent backed by one score policy and an independent QT ensemble."""
+
+    def __init__(self, budget=100, name="GAS-Paper", cpa=2, category=1,
+                 model_param=None):
+        super().__init__(budget=budget, name=name, cpa=cpa, category=category)
+        if model_param is None:
+            model_param = {}
+
+        import json
+        from pathlib import Path
+        from simul_bidding_env.strategy.gas.paper_gas import (
+            PaperQT, ScorePolicy, load_checkpoint,
+        )
+
+        bundle_dir = Path(model_param["bundle_dir"])
+        with open(bundle_dir / "best_model.json", "r", encoding="utf-8") as f:
+            best = json.load(f)
+        step = int(best["best_step"])
+        device = model_param.get("device", "cpu")
+        policy_dir = bundle_dir / "policy" / "checkpoints" / f"step_{step}"
+        critic_dirs = [
+            bundle_dir / f"critic_{seed}" / "checkpoints" / f"step_{step}"
+            for seed in (101, 202, 303)
+        ]
+        self._policy = load_checkpoint(policy_dir, device)
+        self._critics = [load_checkpoint(path, device) for path in critic_dirs]
+        if not isinstance(self._policy, ScorePolicy):
+            raise ValueError("GAS bundle policy is not a ScorePolicy")
+        if not all(isinstance(critic, PaperQT) for critic in self._critics):
+            raise ValueError("GAS bundle critics are not PaperQT models")
+
+        critic_meta = []
+        for path in critic_dirs:
+            with open(path / "model.json", "r", encoding="utf-8") as f:
+                critic_meta.append(json.load(f))
+        if len({meta["seed"] for meta in critic_meta}) != len(critic_meta):
+            raise ValueError("GAS critics must use independent training seeds")
+
+        self._action_num = int(model_param.get("action_num", best.get("action_num", 5)))
+        if self._action_num < 2:
+            raise ValueError("GAS action_num must be at least 2")
+        self._seed = int(model_param.get("seed", best.get("seed", 42)))
+        self._rng = np.random.default_rng(self._seed)
+        self._remaining_budget_last = self.budget
+
+    def reset(self):
+        self.remaining_budget = self.budget
+        self._remaining_budget_last = self.budget
+        self._rng = np.random.default_rng(self._seed)
+        self._policy.init_eval()
+
+    def bidding(self, timeStepIndex, pValues, pValueSigmas,
+                historyPValueInfo, historyBid,
+                historyAuctionResult, historyImpressionResult,
+                historyLeastWinningCost):
+        from simul_bidding_env.strategy.gas.paper_gas import search_action
+
+        if timeStepIndex == 0:
+            self._policy.init_eval()
+            self._remaining_budget_last = self.budget
+        state = _build_state_16(
+            timeStepIndex, self.remaining_budget, self.budget,
+            pValues, historyBid, historyAuctionResult,
+            historyImpressionResult, historyLeastWinningCost,
+            historyPValueInfo)
+        pre_reward = None
+        pre_cost = None
+        if historyImpressionResult:
+            last = np.asarray(historyImpressionResult[-1], dtype=np.float32)
+            pre_reward = float(last[:, 1].sum())
+            pre_cost = float(self._remaining_budget_last - self.remaining_budget)
+        proposal = self._policy.take_actions(
+            state, actual_excuted_action=None, pre_reward=pre_reward,
+            pre_cost=pre_cost, cpa_constrain=self.cpa)
+        selected = search_action(
+            self._policy, self._critics, proposal, self._rng, self._action_num)
+        alpha = float(np.asarray(selected).reshape(-1)[0])
+        self._remaining_budget_last = self.remaining_budget
+        return alpha * np.asarray(pValues, dtype=np.float64)
+
 class DGABEnsembleAuctionNetAgent(AuctionNetBase):
     """Sparsity-gated ensemble: R2 (dense, cls-token) + R5 (sparse, BidFormer).
 
