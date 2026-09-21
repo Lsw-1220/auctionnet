@@ -164,7 +164,10 @@ class DecisionTransformer(nn.Module):
                  learning_rate=1e-5
                  ):
         super(DecisionTransformer, self).__init__()
-        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        requested_device = str(device)
+        if requested_device.startswith("cuda") and not torch.cuda.is_available():
+            requested_device = "cpu"
+        self.device = requested_device
 
         self.length_times = 3
         self.reweight_w = reweight_w
