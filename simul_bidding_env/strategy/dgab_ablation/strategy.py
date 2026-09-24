@@ -121,8 +121,13 @@ class DGABAblationStrategy(BaseBiddingStrategy):
             auc = np.asarray(historyAuctionResult[-1])
             if imp.ndim == 3: imp = imp[0]
             if auc.ndim == 3: auc = auc[0]
-            self.rollout.update_rtg(float(imp[:, -1].sum()),
-                                    float(auc[:, 4].sum()))
+            if auc.shape[1] >= 5:
+                previous_cost = float(auc[:, 4].sum())
+            elif auc.shape[1] == 3:
+                previous_cost = float((auc[:, 2] * imp[:, 0]).sum())
+            else:
+                raise ValueError(f"unsupported auction history shape: {auc.shape}")
+            self.rollout.update_rtg(float(imp[:, -1].sum()), previous_cost)
         action = float(np.asarray(self.rollout.act(state)).reshape(-1)[0])
         alpha = float(np.clip(action * self.action_std + self.action_mean,
                               0, self.action_upper))
@@ -136,5 +141,11 @@ class DGABAblationStrategy(BaseBiddingStrategy):
             if auc.ndim == 3: auc = auc[0]
             if imp.ndim == 3: imp = imp[0]
             if pv.ndim == 3: pv = pv[0]
-            self.builder.update(bids, lwc, auc[:, 2], imp[:, -1], pv[:, 0])
+            if auc.shape[1] >= 5:
+                tick_status = auc[:, 2]
+            elif auc.shape[1] == 3:
+                tick_status = auc[:, 0]
+            else:
+                raise ValueError(f"unsupported auction history shape: {auc.shape}")
+            self.builder.update(bids, lwc, tick_status, imp[:, -1], pv[:, 0])
         return alpha * pValues
