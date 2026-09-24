@@ -8,6 +8,7 @@ import sys
 import benchmark_multistrat as benchmark
 
 from simul_bidding_env.strategy.dgabshare_bidding_strategy import DGABShareStrategy
+from simul_bidding_env.strategy.dgab_ablation import DGABAblationStrategy
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +33,7 @@ def parse_args():
     parser.add_argument(
         "--model_root", default=project_path("saved_model", "sparse_benchmark"))
     parser.add_argument("--v_goal_multiplier", type=float, required=True)
+    parser.add_argument("--ablation_model_root", default=project_path("saved_model", "dgab_ablation"))
     return parser.parse_args()
 
 
@@ -56,6 +58,7 @@ def require_file(path):
 
 
 selected = set(args.strategies)
+ABLATION_NAMES = {f"v{i}_sparse" for i in range(1, 6)}
 requirements = {
     "BC": [os.path.join(BC_DIR, "bc_model.pth"),
            os.path.join(BC_DIR, "normalize_dict.pkl")],
@@ -144,6 +147,16 @@ strategy_map.update({
     "GAS": benchmark.make_gas,
     "QGA": benchmark.make_qga,
 })
+def make_ablation_factory(name):
+    def factory(budget, cpa, category, **kwargs):
+        return DGABAblationStrategy(budget=budget, cpa=cpa, category=category, name=name, device=benchmark.DEVICE, model_dir=os.path.join(args.ablation_model_root, name))
+    return factory
+for ablation_name in sorted(ABLATION_NAMES):
+    directory = os.path.join(args.ablation_model_root, ablation_name)
+    if ablation_name in selected:
+        for filename in ("best.pt", "normalize_dict.pkl", "model_spec.json"):
+            require_file(os.path.join(directory, filename))
+    strategy_map[ablation_name] = make_ablation_factory(ablation_name)
 benchmark.ALL_STRATEGIES = list(strategy_map.items())
 
 benchmark_args = [

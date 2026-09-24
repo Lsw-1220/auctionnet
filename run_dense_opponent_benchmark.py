@@ -14,6 +14,7 @@ from bidding_train_env.strategy.bcq_bidding_strategy import BcqBiddingStrategy
 from bidding_train_env.strategy.iql_bidding_strategy import IqlBiddingStrategy
 from bidding_train_env.strategy.td3_bc_bidding_strategy import TD3_BCBiddingStrategy
 from simul_bidding_env.strategy.dgabshare_bidding_strategy import DGABShareStrategy
+from simul_bidding_env.strategy.dgab_ablation import DGABAblationStrategy
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -52,6 +53,7 @@ def parse_args():
     parser.add_argument("--dgabshare_ckpt", default="step_26000.pt")
     parser.add_argument("--v_goal_multiplier", type=float, default=15.0)
     parser.add_argument("--action_multiplier", type=float, default=1.0)
+    parser.add_argument("--ablation_model_root", default=project_path("saved_model", "dgab_ablation"))
     parser.add_argument(
         "--qga_dir",
         default=project_path("saved_model", "QGA_dense", "QGA"),
@@ -89,6 +91,10 @@ required_paths = [
 ]
 
 selected_strategies = set(args.strategies)
+ABLATION_NAMES = {f"v{i}_dense" for i in range(1, 6)}
+for name in sorted(selected_strategies.intersection(ABLATION_NAMES)):
+    directory = os.path.join(args.ablation_model_root, name)
+    required_paths.extend([os.path.join(directory, f) for f in ("best.pt", "normalize_dict.pkl", "model_spec.json")])
 if "GAVE" in selected_strategies:
     required_paths.extend([
         os.path.join(args.gave_dir, args.gave_ckpt),
@@ -247,6 +253,12 @@ strategy_map["DT"] = benchmark.make_dt
 strategy_map["GUIDE"] = make_guide_dense
 strategy_map["DGABShare"] = make_dgabshare_v15
 strategy_map["DGABShare_26000"] = make_dgabshare_v15
+def make_ablation_factory(name):
+    def factory(budget, cpa, category, **kwargs):
+        return DGABAblationStrategy(budget=budget, cpa=cpa, category=category, name=name, device=benchmark.DEVICE, model_dir=os.path.join(args.ablation_model_root, name))
+    return factory
+for ablation_name in sorted(ABLATION_NAMES):
+    strategy_map[ablation_name] = make_ablation_factory(ablation_name)
 benchmark.ALL_STRATEGIES = list(strategy_map.items())
 
 benchmark_args = [
