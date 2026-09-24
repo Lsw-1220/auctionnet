@@ -255,7 +255,7 @@ strategy_map["DGABShare"] = make_dgabshare_v15
 strategy_map["DGABShare_26000"] = make_dgabshare_v15
 def make_ablation_factory(name):
     def factory(budget, cpa, category, **kwargs):
-        return DGABAblationStrategy(budget=budget, cpa=cpa, category=category, name=name, device=benchmark.DEVICE, model_dir=os.path.join(args.ablation_model_root, name))
+        return DGABAblationStrategy(budget=budget, cpa=cpa, category=category, name=name, device=benchmark.DEVICE, model_dir=os.path.join(args.ablation_model_root, name), model_param={"v_goal_multiplier": args.v_goal_multiplier})
     return factory
 for ablation_name in sorted(ABLATION_NAMES):
     strategy_map[ablation_name] = make_ablation_factory(ablation_name)

@@ -14,5 +14,5 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate autobidding
 STRATEGIES=(v1_dense v2_dense v3_dense v4_dense v5_dense); EPISODE=$((SLURM_ARRAY_TASK_ID%10)); STRATEGY=${STRATEGIES[$((SLURM_ARRAY_TASK_ID/10))]}
 OUT=exp_data/dgab_ablation/dense_sim/${STRATEGY}/episode_${EPISODE}; mkdir -p "$OUT" log
-python run_dense_opponent_benchmark.py --budget_rate 1.0 --episodes "$EPISODE" --strategies "$STRATEGY" --pv 0.005 --pv_num 500000 --seed 42 --device cpu --ablation_model_root saved_model/dgab_ablation --output_dir "$OUT" --output "${STRATEGY}_pv_0.005_ep${EPISODE}"
+python run_dense_opponent_benchmark.py --budget_rate 1.0 --episodes "$EPISODE" --strategies "$STRATEGY" --pv 0.005 --pv_num 500000 --seed 42 --device cpu --v_goal_multiplier 15 --ablation_model_root saved_model/dgab_ablation --output_dir "$OUT" --output "${STRATEGY}_pv_0.005_ep${EPISODE}"
 
