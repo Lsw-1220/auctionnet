@@ -538,6 +538,18 @@ def run_one_episode(controller, player_index, agent_factory, pvalue_mean_base,
     player_cost = costs[player_index]
     player_cpa_real = player_cost / (player_reward + 1e-10)
     player_cpa_target = agents_cpa[player_index]
+    player_budget = float(budgets[player_index])
+    player_v_goal_multiplier = float(
+        getattr(agents[player_index], 'v_goal_multiplier', np.nan))
+    if (np.isfinite(player_v_goal_multiplier)
+            and player_v_goal_multiplier > 0
+            and player_cpa_target > 0):
+        conversion_goal = (
+            player_budget * player_v_goal_multiplier / player_cpa_target)
+        conversion_completion_rate = player_reward / conversion_goal
+    else:
+        conversion_goal = np.nan
+        conversion_completion_rate = np.nan
 
     # NeurIPS score
     beta = 2
@@ -553,7 +565,11 @@ def run_one_episode(controller, player_index, agent_factory, pvalue_mean_base,
         'cost': player_cost,
         'cpa_real': player_cpa_real,
         'cpa_target': player_cpa_target,
-        'budget_used': player_cost / budgets[player_index],
+        'budget': player_budget,
+        'budget_used': player_cost / player_budget,
+        'v_goal_multiplier': player_v_goal_multiplier,
+        'conversion_goal': conversion_goal,
+        'conversion_completion_rate': conversion_completion_rate,
     }
     return result, tick_rows
 
@@ -651,8 +667,14 @@ def main():
                     logger.error(f'  [{name}] adv={adv} pv={pv_val} FAILED: {e}')
                     if args.fail_fast:
                         raise
-                    res = {'score': 0, 'reward': 0, 'cost': 0,
-                           'cpa_real': float('inf'), 'cpa_target': 0, 'budget_used': 0}
+                    res = {
+                        'score': 0, 'reward': 0, 'cost': 0,
+                        'cpa_real': float('inf'), 'cpa_target': np.nan,
+                        'budget': np.nan, 'budget_used': np.nan,
+                        'v_goal_multiplier': np.nan,
+                        'conversion_goal': np.nan,
+                        'conversion_completion_rate': np.nan,
+                    }
                     ticks, status, error = [], 'failed', repr(e)
 
                 elapsed = time.time() - t0
@@ -684,9 +706,39 @@ def main():
     logger.info(f'Results saved to {out_results}')
 
     # Summary: avg per (pv, strategy)
-    metric_cols = ['score', 'reward', 'cost', 'cpa_real', 'budget_used']
+    metric_cols = [
+        'score', 'reward', 'cost', 'cpa_real', 'cpa_target',
+        'budget', 'budget_used', 'v_goal_multiplier', 'conversion_goal',
+    ]
     ok_df = df[df['status'] == 'ok']
-    summary = ok_df.groupby(['pvalue_mean_base', 'strategy'])[metric_cols].mean().reset_index()
+    summary_keys = ['pvalue_mean_base', 'strategy']
+    grouped = ok_df.groupby(summary_keys)
+    summary = grouped[metric_cols].mean().reset_index()
+    completion_mean = grouped['conversion_completion_rate'].mean()
+    conversion_total = grouped['reward'].sum()
+    conversion_goal_total = grouped['conversion_goal'].sum(min_count=1)
+    completion_aggregate = conversion_total / conversion_goal_total
+    summary = summary.merge(
+        completion_mean.rename('mean_conversion_completion_rate').reset_index(),
+        on=summary_keys,
+        how='left',
+    )
+    summary = summary.merge(
+        conversion_total.rename('total_conversion').reset_index(),
+        on=summary_keys,
+        how='left',
+    )
+    summary = summary.merge(
+        conversion_goal_total.rename('total_conversion_goal').reset_index(),
+        on=summary_keys,
+        how='left',
+    )
+    summary = summary.merge(
+        completion_aggregate.rename(
+            'aggregate_conversion_completion_rate').reset_index(),
+        on=summary_keys,
+        how='left',
+    )
     out_summary = os.path.join(out_dir, f'{output_prefix}_summary.csv')
     summary.to_csv(out_summary, index=False)
     logger.info(f'Summary saved to {out_summary}')
@@ -712,6 +764,7 @@ def main():
         seed=seed, exploration_scale=EXPLORATION_SCALE,
         exploration_rho=EXPLORATION_RHO, pv_num=args.pv_num,
         budget_rate=args.budget_rate,
+        v_goal_multiplier=args.v_goal_multiplier,
     )
     with open(os.path.join(out_dir, f'{output_prefix}_manifest.json'), 'w', encoding='utf-8') as handle:
         json.dump(manifest, handle, indent=2, ensure_ascii=False)
