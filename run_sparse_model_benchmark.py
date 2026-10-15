@@ -33,6 +33,8 @@ def parse_args():
     parser.add_argument(
         "--model_root", default=project_path("saved_model", "sparse_benchmark"))
     parser.add_argument("--v_goal_multiplier", type=float, required=True)
+    parser.add_argument("--dgabsearch_dir", default=None)
+    parser.add_argument("--dgabsearch_ckpt", default="step_15000.pt")
     parser.add_argument("--ablation_model_root", default=project_path("saved_model", "dgab_ablation"))
     return parser.parse_args()
 
@@ -82,6 +84,12 @@ requirements = {
             os.path.join(QGA_DIR, "checkpoints", "actor_step_11000.pt"),
             os.path.join(QGA_DIR, "checkpoints", "critic_step_11000.pt")],
 }
+if "dgabsearch" in selected:
+    search_dir = os.path.abspath(args.dgabsearch_dir or DGAB_DIR)
+    requirements["dgabsearch"] = [
+        os.path.join(search_dir, args.dgabsearch_ckpt),
+        os.path.join(search_dir, "normalize_dict.pkl"),
+    ]
 for strategy in selected:
     for path in requirements.get(strategy, []):
         require_file(path)
@@ -174,6 +182,8 @@ benchmark_args = [
     "--iql_dir", IQL_DIR,
     "--dgabshare_dir", DGAB_DIR,
     "--dgabshare_ckpt", "step_15000.pt",
+    "--dgabsearch_dir", args.dgabsearch_dir or DGAB_DIR,
+    "--dgabsearch_ckpt", args.dgabsearch_ckpt,
     "--v_goal_multiplier", str(args.v_goal_multiplier),
     "--gave_dir", GAVE_DIR,
     "--gas_dir", GAS_DIR,

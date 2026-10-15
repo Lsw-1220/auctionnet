@@ -51,6 +51,8 @@ def parse_args():
         default=project_path("saved_model", "dgab_shared_20260912135525"),
     )
     parser.add_argument("--dgabshare_ckpt", default="step_26000.pt")
+    parser.add_argument("--dgabsearch_dir", default=None)
+    parser.add_argument("--dgabsearch_ckpt", default=None)
     parser.add_argument("--v_goal_multiplier", type=float, default=15.0)
     parser.add_argument("--action_multiplier", type=float, default=1.0)
     parser.add_argument("--ablation_model_root", default=project_path("saved_model", "dgab_ablation"))
@@ -126,6 +128,13 @@ if selected_strategies.intersection({"DGABShare", "DGABShare_26000"}):
     required_paths.extend([
         os.path.join(args.dgabshare_dir, args.dgabshare_ckpt),
         os.path.join(args.dgabshare_dir, "normalize_dict.pkl"),
+    ])
+if "dgabsearch" in selected_strategies:
+    search_dir = args.dgabsearch_dir or args.dgabshare_dir
+    search_ckpt = args.dgabsearch_ckpt or args.dgabshare_ckpt
+    required_paths.extend([
+        os.path.join(search_dir, search_ckpt),
+        os.path.join(search_dir, "normalize_dict.pkl"),
     ])
 if "QGA" in selected_strategies:
     required_paths.extend([
@@ -278,6 +287,8 @@ benchmark_args = [
     "--iql_dir", IQL_DIR,
     "--dgabshare_dir", args.dgabshare_dir,
     "--dgabshare_ckpt", args.dgabshare_ckpt,
+    "--dgabsearch_dir", args.dgabsearch_dir or args.dgabshare_dir,
+    "--dgabsearch_ckpt", args.dgabsearch_ckpt or args.dgabshare_ckpt,
     "--qga_dir", args.qga_dir,
     "--qga_ckpt_step", str(args.qga_ckpt_step),
     "--device", args.device,

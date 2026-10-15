@@ -81,6 +81,8 @@ TD3_BC_SAVE_DIR = './saved_model/td3_bc/checkpoint_00010000'
 GUIDE_SAVE_DIR  = './strategy_train_env/saved_model/9000'
 DGABSHARE_SAVE_DIR = './saved_model/dgabshare_full'
 DGABSHARE_CKPT = 'step_15000.pt'
+DGABSEARCH_SAVE_DIR = None  # Defaults to DGABSHARE_SAVE_DIR
+DGABSEARCH_CKPT = 'step_15000.pt'
 EXPLORATION_SCALE = 0.0
 EXPLORATION_RHO = 0.8
 V_GOAL_MULTIPLIER = 1.0
@@ -158,6 +160,10 @@ def parse_args():
                     help='DGABShare model directory (actor.pt + normalize_dict.pkl)')
     ap.add_argument('--dgabshare_ckpt', type=str, default=DGABSHARE_CKPT,
                     help='DGABShare checkpoint filename (default: step_15000.pt)')
+    ap.add_argument('--dgabsearch_dir', type=str, default=None,
+                    help='dgabsearch shared model directory (default: --dgabshare_dir)')
+    ap.add_argument('--dgabsearch_ckpt', type=str, default=DGABSEARCH_CKPT,
+                    help='dgabsearch checkpoint filename (default: step_15000.pt)')
     ap.add_argument('--gas_dir', type=str, default=None,
                     help='GAS model directory (dt.pt + normalize_dict.pkl)')
     ap.add_argument('--qga_dir', type=str, default=None,
@@ -293,6 +299,18 @@ def make_dgabshare(budget, cpa, category, **kw):
     )
 
 
+def make_dgabsearch(budget, cpa, category, **kw):
+    from simul_bidding_env.strategy.dgabsearch_bidding_strategy import DGABSearchStrategy
+    return DGABSearchStrategy(
+        budget=budget, cpa=cpa, category=category, name='dgabsearch',
+        model_param=dict(
+            save_dir=DGABSEARCH_SAVE_DIR or DGABSHARE_SAVE_DIR,
+            ckpt_name=DGABSEARCH_CKPT, device=DEVICE,
+            K=20, v_goal_multiplier=V_GOAL_MULTIPLIER,
+        ),
+    )
+
+
 def make_gas(budget, cpa, category, **kw):
     return GASPaperAuctionNetAgent(
         budget=budget, cpa=cpa, category=category,
@@ -402,6 +420,7 @@ ALL_STRATEGIES = [
     ('IQL', make_iql),
     ('TD3_BC', make_td3_bc),
     ('DGABShare', make_dgabshare),
+    ('dgabsearch', make_dgabsearch),
     ('QGA', make_qga),
     ('SemBid', make_sembid),
 ]
@@ -581,6 +600,8 @@ def run_one_episode(controller, player_index, agent_factory, pvalue_mean_base,
 def main():
     global DEVICE, GAVE_SAVE_DIR, DGAB_SAVE_DIR, VGAB_SAVE_DIR, DT_SAVE_DIR, IQL_SAVE_DIR, BC_SAVE_DIR, BCQ_SAVE_DIR, TD3_BC_SAVE_DIR, GUIDE_SAVE_DIR, DGABSHARE_SAVE_DIR, DGABSHARE_CKPT, GAS_SAVE_DIR, QGA_SAVE_DIR, QGA_CKPT_STEP, SEMBID_SAVE_DIR, SEMBID_EMBEDDING_LOOKUP, OUTPUT_DIR, EXPLORATION_SCALE, EXPLORATION_RHO, V_GOAL_MULTIPLIER
 
+    global DGABSEARCH_SAVE_DIR, DGABSEARCH_CKPT
+
     args = parse_args()
 
     DEVICE = args.device or ('cuda:0' if __import__('torch').cuda.is_available() else 'cpu')
@@ -605,6 +626,8 @@ def main():
     if args.guide_dir:  GUIDE_SAVE_DIR  = args.guide_dir
     if args.dgabshare_dir: DGABSHARE_SAVE_DIR = args.dgabshare_dir
     DGABSHARE_CKPT = args.dgabshare_ckpt
+    DGABSEARCH_SAVE_DIR = args.dgabsearch_dir
+    DGABSEARCH_CKPT = args.dgabsearch_ckpt
     EXPLORATION_SCALE = args.exploration_scale
     EXPLORATION_RHO = args.exploration_rho
     V_GOAL_MULTIPLIER = args.v_goal_multiplier
@@ -766,6 +789,16 @@ def main():
         budget_rate=args.budget_rate,
         v_goal_multiplier=args.v_goal_multiplier,
     )
+    manifest['strategies'] = args.strategies
+    if 'dgabsearch' in args.strategies:
+        search_dir = DGABSEARCH_SAVE_DIR or DGABSHARE_SAVE_DIR
+        search_ckpt = os.path.join(search_dir, DGABSEARCH_CKPT)
+        with open(search_ckpt, 'rb') as model_handle:
+            search_hash = hashlib.sha256(model_handle.read()).hexdigest()
+        manifest['dgabsearch'] = dict(
+            model_dir=os.path.abspath(search_dir), checkpoint=DGABSEARCH_CKPT,
+            checkpoint_sha256=search_hash,
+            inference_mode='dual_return_feedback', exploration_scale=0.0)
     with open(os.path.join(out_dir, f'{output_prefix}_manifest.json'), 'w', encoding='utf-8') as handle:
         json.dump(manifest, handle, indent=2, ensure_ascii=False)
 
