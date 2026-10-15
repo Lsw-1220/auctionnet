@@ -83,6 +83,9 @@ DGABSHARE_SAVE_DIR = './saved_model/dgabshare_full'
 DGABSHARE_CKPT = 'step_15000.pt'
 DGABSEARCH_SAVE_DIR = None  # Defaults to DGABSHARE_SAVE_DIR
 DGABSEARCH_CKPT = 'step_15000.pt'
+DGABQSEARCH_SAVE_DIR = None
+DGABQSEARCH_CKPT = 'step_15000.pt'
+DGABQSEARCH_NOISE_STD = 0.1
 EXPLORATION_SCALE = 0.0
 EXPLORATION_RHO = 0.8
 V_GOAL_MULTIPLIER = 1.0
@@ -164,6 +167,11 @@ def parse_args():
                     help='dgabsearch shared model directory (default: --dgabshare_dir)')
     ap.add_argument('--dgabsearch_ckpt', type=str, default=DGABSEARCH_CKPT,
                     help='dgabsearch checkpoint filename (default: step_15000.pt)')
+    ap.add_argument('--dgabqsearch_dir', default=None,
+                    help='dgabQsearch shared model directory (default: --dgabshare_dir)')
+    ap.add_argument('--dgabqsearch_ckpt', default=DGABQSEARCH_CKPT)
+    ap.add_argument('--dgabqsearch_noise_std', type=float, default=0.1,
+                    help='dgabQsearch additive action noise std in raw action units')
     ap.add_argument('--gas_dir', type=str, default=None,
                     help='GAS model directory (dt.pt + normalize_dict.pkl)')
     ap.add_argument('--qga_dir', type=str, default=None,
@@ -311,6 +319,20 @@ def make_dgabsearch(budget, cpa, category, **kw):
     )
 
 
+def make_dgabqsearch(budget, cpa, category, **kw):
+    from simul_bidding_env.strategy.dgabqsearch_bidding_strategy import DGABQSearchStrategy
+    return DGABQSearchStrategy(
+        budget=budget, cpa=cpa, category=category, name='dgabQsearch',
+        model_param=dict(
+            save_dir=DGABQSEARCH_SAVE_DIR or DGABSHARE_SAVE_DIR,
+            ckpt_name=DGABQSEARCH_CKPT, device=DEVICE, K=20,
+            v_goal_multiplier=V_GOAL_MULTIPLIER,
+            qsearch_noise_std=DGABQSEARCH_NOISE_STD,
+            qsearch_seed=int(kw.get('exploration_seed', 42)),
+        ),
+    )
+
+
 def make_gas(budget, cpa, category, **kw):
     return GASPaperAuctionNetAgent(
         budget=budget, cpa=cpa, category=category,
@@ -421,6 +443,7 @@ ALL_STRATEGIES = [
     ('TD3_BC', make_td3_bc),
     ('DGABShare', make_dgabshare),
     ('dgabsearch', make_dgabsearch),
+    ('dgabQsearch', make_dgabqsearch),
     ('QGA', make_qga),
     ('SemBid', make_sembid),
 ]
@@ -601,6 +624,7 @@ def main():
     global DEVICE, GAVE_SAVE_DIR, DGAB_SAVE_DIR, VGAB_SAVE_DIR, DT_SAVE_DIR, IQL_SAVE_DIR, BC_SAVE_DIR, BCQ_SAVE_DIR, TD3_BC_SAVE_DIR, GUIDE_SAVE_DIR, DGABSHARE_SAVE_DIR, DGABSHARE_CKPT, GAS_SAVE_DIR, QGA_SAVE_DIR, QGA_CKPT_STEP, SEMBID_SAVE_DIR, SEMBID_EMBEDDING_LOOKUP, OUTPUT_DIR, EXPLORATION_SCALE, EXPLORATION_RHO, V_GOAL_MULTIPLIER
 
     global DGABSEARCH_SAVE_DIR, DGABSEARCH_CKPT
+    global DGABQSEARCH_SAVE_DIR, DGABQSEARCH_CKPT, DGABQSEARCH_NOISE_STD
 
     args = parse_args()
 
@@ -628,6 +652,9 @@ def main():
     DGABSHARE_CKPT = args.dgabshare_ckpt
     DGABSEARCH_SAVE_DIR = args.dgabsearch_dir
     DGABSEARCH_CKPT = args.dgabsearch_ckpt
+    DGABQSEARCH_SAVE_DIR = args.dgabqsearch_dir
+    DGABQSEARCH_CKPT = args.dgabqsearch_ckpt
+    DGABQSEARCH_NOISE_STD = args.dgabqsearch_noise_std
     EXPLORATION_SCALE = args.exploration_scale
     EXPLORATION_RHO = args.exploration_rho
     V_GOAL_MULTIPLIER = args.v_goal_multiplier
@@ -799,6 +826,20 @@ def main():
             model_dir=os.path.abspath(search_dir), checkpoint=DGABSEARCH_CKPT,
             checkpoint_sha256=search_hash,
             inference_mode='dual_return_feedback', exploration_scale=0.0)
+    if 'dgabQsearch' in args.strategies:
+        qsearch_dir = DGABQSEARCH_SAVE_DIR or DGABSHARE_SAVE_DIR
+        qsearch_path = os.path.join(qsearch_dir, DGABQSEARCH_CKPT)
+        qsearch_hash = None
+        if os.path.isfile(qsearch_path):
+            with open(qsearch_path, 'rb') as model_handle:
+                qsearch_hash = hashlib.sha256(model_handle.read()).hexdigest()
+        manifest['dgabQsearch'] = dict(
+            model_dir=os.path.abspath(qsearch_dir), checkpoint=DGABQSEARCH_CKPT,
+            checkpoint_sha256=qsearch_hash, inference_mode='conversion_q_search',
+            r_multipliers=[1.0, 1.2, 1.4, 1.6], actions_per_r=3,
+            noise_std=DGABQSEARCH_NOISE_STD, noise_units='raw_action',
+            ranking='Q_conversion_only', search_from_t0=True,
+            seed_rule='seed * 1000003 + episode * 1009 + advertiser')
     with open(os.path.join(out_dir, f'{output_prefix}_manifest.json'), 'w', encoding='utf-8') as handle:
         json.dump(manifest, handle, indent=2, ensure_ascii=False)
 

@@ -35,6 +35,9 @@ def parse_args():
     parser.add_argument("--v_goal_multiplier", type=float, required=True)
     parser.add_argument("--dgabsearch_dir", default=None)
     parser.add_argument("--dgabsearch_ckpt", default="step_15000.pt")
+    parser.add_argument("--dgabqsearch_dir", default=None)
+    parser.add_argument("--dgabqsearch_ckpt", default="step_15000.pt")
+    parser.add_argument("--dgabqsearch_noise_std", type=float, default=0.1)
     parser.add_argument("--ablation_model_root", default=project_path("saved_model", "dgab_ablation"))
     return parser.parse_args()
 
@@ -89,6 +92,12 @@ if "dgabsearch" in selected:
     requirements["dgabsearch"] = [
         os.path.join(search_dir, args.dgabsearch_ckpt),
         os.path.join(search_dir, "normalize_dict.pkl"),
+    ]
+if "dgabQsearch" in selected:
+    qsearch_dir = os.path.abspath(args.dgabqsearch_dir or DGAB_DIR)
+    requirements["dgabQsearch"] = [
+        os.path.join(qsearch_dir, args.dgabqsearch_ckpt),
+        os.path.join(qsearch_dir, "normalize_dict.pkl"),
     ]
 for strategy in selected:
     for path in requirements.get(strategy, []):
@@ -184,6 +193,9 @@ benchmark_args = [
     "--dgabshare_ckpt", "step_15000.pt",
     "--dgabsearch_dir", args.dgabsearch_dir or DGAB_DIR,
     "--dgabsearch_ckpt", args.dgabsearch_ckpt,
+    "--dgabqsearch_dir", args.dgabqsearch_dir or DGAB_DIR,
+    "--dgabqsearch_ckpt", args.dgabqsearch_ckpt,
+    "--dgabqsearch_noise_std", str(args.dgabqsearch_noise_std),
     "--v_goal_multiplier", str(args.v_goal_multiplier),
     "--gave_dir", GAVE_DIR,
     "--gas_dir", GAS_DIR,
