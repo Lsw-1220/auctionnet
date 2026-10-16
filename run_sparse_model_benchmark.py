@@ -32,6 +32,8 @@ def parse_args():
     parser.add_argument("--output_dir", required=True)
     parser.add_argument(
         "--model_root", default=project_path("saved_model", "sparse_benchmark"))
+    parser.add_argument("--dgabshare_dir", default=None)
+    parser.add_argument("--dgabshare_ckpt", default="step_15000.pt")
     parser.add_argument("--v_goal_multiplier", type=float, required=True)
     parser.add_argument("--dgabsearch_dir", default=None)
     parser.add_argument("--dgabsearch_ckpt", default="step_15000.pt")
@@ -52,6 +54,7 @@ TD3_BC_DIR = os.path.join(root, "td3_bc", "checkpoint_00010000")
 DT_DIR = os.path.join(root, "DT", "checkpoint_00008000")
 GUIDE_DIR = os.path.join(root, "GUIDE", "9000")
 DGAB_DIR = os.path.join(root, "DGAB_Pretrain")
+DGAB_SHARE_DIR = os.path.abspath(args.dgabshare_dir or DGAB_DIR)
 GAVE_DIR = os.path.join(root, "GAVE", "gave_400k_2571370")
 GAS_DIR = os.path.join(root, "GAS", "gas_paper_400k_2571447")
 QGA_DIR = os.path.join(root, "QGA")
@@ -79,8 +82,8 @@ requirements = {
               os.path.join(GUIDE_DIR, "GUIDE_critic_inverse.pt"),
               os.path.join(GUIDE_DIR, "GUIDE_idm.pt"),
               os.path.join(GUIDE_DIR, "normalize_dict.pkl")],
-    "DGABShare": [os.path.join(DGAB_DIR, "step_15000.pt"),
-                  os.path.join(DGAB_DIR, "normalize_dict.pkl")],
+    "DGABShare": [os.path.join(DGAB_SHARE_DIR, args.dgabshare_ckpt),
+                  os.path.join(DGAB_SHARE_DIR, "normalize_dict.pkl")],
     "GAVE": [os.path.join(GAVE_DIR, "step_95000.pt"),
              os.path.join(GAVE_DIR, "normalize_dict.pkl")],
     "QGA": [os.path.join(QGA_DIR, "normalize_dict.pkl"),
@@ -140,8 +143,8 @@ def make_dgab_pretrain(budget, cpa, category, exploration_seed=0, **kwargs):
     return DGABShareStrategy(
         budget=budget, cpa=cpa, category=category, name="DGABShare",
         model_param={
-            "save_dir": DGAB_DIR,
-            "ckpt_name": "step_15000.pt",
+            "save_dir": DGAB_SHARE_DIR,
+            "ckpt_name": args.dgabshare_ckpt,
             "device": benchmark.DEVICE,
             "K": 20,
             "v_goal_multiplier": args.v_goal_multiplier,
@@ -189,8 +192,8 @@ benchmark_args = [
     "--guide_dir", GUIDE_DIR,
     "--td3_bc_dir", TD3_BC_DIR,
     "--iql_dir", IQL_DIR,
-    "--dgabshare_dir", DGAB_DIR,
-    "--dgabshare_ckpt", "step_15000.pt",
+    "--dgabshare_dir", DGAB_SHARE_DIR,
+    "--dgabshare_ckpt", args.dgabshare_ckpt,
     "--dgabsearch_dir", args.dgabsearch_dir or DGAB_DIR,
     "--dgabsearch_ckpt", args.dgabsearch_ckpt,
     "--dgabqsearch_dir", args.dgabqsearch_dir or DGAB_DIR,
