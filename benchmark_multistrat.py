@@ -116,6 +116,7 @@ def parse_args():
                     help='Advertiser indices to test (default: all 48)')
     ap.add_argument('--output', type=str, default='benchmark_multistrat',
                     help='Output file prefix (default: benchmark_multistrat)')
+    ap.add_argument('--ctg_multiplier', type=float, default=1.0)
     ap.add_argument('--output_dir', type=str, default=None,
                     help='Output directory (default: {project}/exp_data)')
     ap.add_argument('--device', type=str, default=None,
@@ -612,6 +613,8 @@ def run_one_episode(controller, player_index, agent_factory, pvalue_mean_base,
         'v_goal_multiplier': player_v_goal_multiplier,
         'conversion_goal': conversion_goal,
         'conversion_completion_rate': conversion_completion_rate,
+        'ctg_replenishment_count': int(getattr(
+            agents[player_index], 'ctg_replenishment_count', 0)),
     }
     return result, tick_rows
 
@@ -724,6 +727,7 @@ def main():
                         'v_goal_multiplier': np.nan,
                         'conversion_goal': np.nan,
                         'conversion_completion_rate': np.nan,
+                        'ctg_replenishment_count': np.nan,
                     }
                     ticks, status, error = [], 'failed', repr(e)
 
@@ -752,6 +756,7 @@ def main():
 
     df = pd.DataFrame(results)
     out_results = os.path.join(out_dir, f'{output_prefix}_results.csv')
+    df['ctg_multiplier'] = args.ctg_multiplier
     df.to_csv(out_results, index=False)
     logger.info(f'Results saved to {out_results}')
 
@@ -759,6 +764,8 @@ def main():
     metric_cols = [
         'score', 'reward', 'cost', 'cpa_real', 'cpa_target',
         'budget', 'budget_used', 'v_goal_multiplier', 'conversion_goal',
+        'ctg_multiplier',
+        'ctg_replenishment_count',
     ]
     ok_df = df[df['status'] == 'ok']
     summary_keys = ['pvalue_mean_base', 'strategy']
@@ -815,6 +822,8 @@ def main():
         exploration_rho=EXPLORATION_RHO, pv_num=args.pv_num,
         budget_rate=args.budget_rate,
         v_goal_multiplier=args.v_goal_multiplier,
+        ctg_multiplier=args.ctg_multiplier,
+        ctg_replenishment_rule='if multiplier < 1 and CTG reaches zero with remaining budget > 0, reset CTG to multiplier * remaining budget',
     )
     manifest['strategies'] = args.strategies
     if 'dgabsearch' in args.strategies:

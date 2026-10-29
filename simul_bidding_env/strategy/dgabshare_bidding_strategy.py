@@ -69,7 +69,10 @@ class DGABShareStrategy(BaseBiddingStrategy):
             raise ValueError("exploration_rho must be in [0, 1)")
         if not 0 < self.exploration_min_ratio <= 1 <= self.exploration_max_ratio:
             raise ValueError("exploration ratio bounds must straddle 1")
-        self.v_goal_multiplier = float(model_param.get('v_goal_multiplier', 1.0))
+        self.ctg_multiplier = float(model_param.get('ctg_multiplier', 1.0))
+        if not np.isfinite(self.ctg_multiplier) or self.ctg_multiplier <= 0:
+            raise ValueError('ctg_multiplier must be finite and > 0')
+        self.v_goal_multiplier = float(model_param.get('v_goal_multiplier', 35.0))
         if not np.isfinite(self.v_goal_multiplier) or self.v_goal_multiplier <= 0:
             raise ValueError("v_goal_multiplier must be finite and > 0")
 
@@ -118,7 +121,7 @@ class DGABShareStrategy(BaseBiddingStrategy):
         self.rollout = rollout_class(
             actor,
             V_goal=self.v_goal_multiplier * budget / (cpa + EPS),
-            C_goal=budget,
+            C_goal=self.ctg_multiplier * budget,
             K=model_param.get('K', 20),
             rtg_scale=rtg_scale,
             device=device,
@@ -126,20 +129,31 @@ class DGABShareStrategy(BaseBiddingStrategy):
         self._builder = StateBuilder16(num_steps=48)
         self._exploration_rng = np.random.default_rng(self.exploration_seed)
         self._exploration_state = 0.0
+        self.ctg_replenishment_count = 0
 
     def reset(self):
         self.remaining_budget = self.budget
         self._builder = StateBuilder16(num_steps=48)
         self._exploration_rng = np.random.default_rng(self.exploration_seed)
         self._exploration_state = 0.0
+        self.ctg_replenishment_count = 0
         self.rollout.__init__(
             self.rollout.actor,
             V_goal=self.v_goal_multiplier * self.budget / (self.cpa + EPS),
-            C_goal=self.budget,
+            C_goal=self.ctg_multiplier * self.budget,
             K=self.rollout.K,
             rtg_scale=self.rollout.rtg_scale,
             device=self.rollout.device,
         )
+
+    def _replenish_ctg_if_needed(self):
+        """Refresh a depleted sub-unit cost condition from the live budget."""
+        if (self.ctg_multiplier < 1.0 and self.remaining_budget > 0.0
+                and self.rollout.rtg[1].item() <= 0.0):
+            self.rollout.rtg[1] = (
+                self.ctg_multiplier * self.remaining_budget
+                / self.rollout.rtg_scale)
+            self.ctg_replenishment_count += 1
 
     def bidding(self, timeStepIndex, pValues, pValueSigmas,
                 historyPValueInfo, historyBid,
@@ -168,6 +182,9 @@ class DGABShareStrategy(BaseBiddingStrategy):
                 last_auc = last_auc[0]
             c_prev = float((last_auc[:, 2] * last_imp[:, 0]).sum())
             self.rollout.update_rtg(v_prev, c_prev)
+            # A sub-unit initial cost target can run out before the real budget.
+            # Replenish only that regime; 1.0 retains the original rollout.
+            self._replenish_ctg_if_needed()
 
         action_norm = float(np.asarray(self.rollout.act(state_norm)).reshape(-1)[0])
         base_alpha = float(np.clip(action_norm * self.action_std + self.action_mean,
@@ -196,6 +213,8 @@ class DGABShareStrategy(BaseBiddingStrategy):
             'state_raw': state_raw.tolist(),
             'state_normalized': state_norm.tolist(),
             'v_goal_multiplier': self.v_goal_multiplier,
+            'ctg_multiplier': self.ctg_multiplier,
+            'ctg_replenishment_count': self.ctg_replenishment_count,
             'rtg_v': float(rtg_now[0]),
             'rtg_c': float(rtg_now[1]),
             'state_z_abs_max': float(abs_state.max()),

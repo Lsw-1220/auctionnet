@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -35,6 +36,7 @@ def parse_args():
     parser.add_argument("--dgabshare_dir", default=None)
     parser.add_argument("--dgabshare_ckpt", default="step_15000.pt")
     parser.add_argument("--v_goal_multiplier", type=float, required=True)
+    parser.add_argument("--ctg_multiplier", type=float, default=1.0)
     parser.add_argument("--dgabsearch_dir", default=None)
     parser.add_argument("--dgabsearch_ckpt", default="step_15000.pt")
     parser.add_argument("--dgabqsearch_dir", default=None)
@@ -45,6 +47,8 @@ def parse_args():
 
 
 args = parse_args()
+if not math.isfinite(args.ctg_multiplier) or args.ctg_multiplier <= 0:
+    raise ValueError('--ctg_multiplier must be finite and > 0')
 root = os.path.abspath(args.model_root)
 
 BC_DIR = os.path.join(root, "BC", "checkpoint_00004000")
@@ -148,6 +152,7 @@ def make_dgab_pretrain(budget, cpa, category, exploration_seed=0, **kwargs):
             "device": benchmark.DEVICE,
             "K": 20,
             "v_goal_multiplier": args.v_goal_multiplier,
+            "ctg_multiplier": args.ctg_multiplier,
             "exploration_scale": 0.0,
             "exploration_rho": 0.8,
             "exploration_seed": int(exploration_seed),
@@ -200,6 +205,7 @@ benchmark_args = [
     "--dgabqsearch_ckpt", args.dgabqsearch_ckpt,
     "--dgabqsearch_noise_std", str(args.dgabqsearch_noise_std),
     "--v_goal_multiplier", str(args.v_goal_multiplier),
+    "--ctg_multiplier", str(args.ctg_multiplier),
     "--gave_dir", GAVE_DIR,
     "--gas_dir", GAS_DIR,
     "--qga_dir", QGA_DIR,
