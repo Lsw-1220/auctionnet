@@ -75,6 +75,13 @@ class DGABShareStrategy(BaseBiddingStrategy):
         self.v_goal_multiplier = float(model_param.get('v_goal_multiplier', 35.0))
         if not np.isfinite(self.v_goal_multiplier) or self.v_goal_multiplier <= 0:
             raise ValueError("v_goal_multiplier must be finite and > 0")
+        fixed_v_goal = model_param.get('conversion_goal')
+        self.conversion_goal = (None if fixed_v_goal is None
+                                else float(fixed_v_goal))
+        if (self.conversion_goal is not None
+                and (not np.isfinite(self.conversion_goal)
+                     or self.conversion_goal <= 0)):
+            raise ValueError("conversion_goal must be finite and > 0")
 
         pkl_path = os.path.join(model_param['save_dir'], 'normalize_dict.pkl')
         with open(pkl_path, 'rb') as f:
@@ -120,7 +127,8 @@ class DGABShareStrategy(BaseBiddingStrategy):
         rollout_class = DGABSharedRollout if is_shared else DGABRollout
         self.rollout = rollout_class(
             actor,
-            V_goal=self.v_goal_multiplier * budget / (cpa + EPS),
+            V_goal=(self.conversion_goal if self.conversion_goal is not None
+                    else self.v_goal_multiplier * budget / (cpa + EPS)),
             C_goal=self.ctg_multiplier * budget,
             K=model_param.get('K', 20),
             rtg_scale=rtg_scale,
@@ -139,7 +147,8 @@ class DGABShareStrategy(BaseBiddingStrategy):
         self.ctg_replenishment_count = 0
         self.rollout.__init__(
             self.rollout.actor,
-            V_goal=self.v_goal_multiplier * self.budget / (self.cpa + EPS),
+            V_goal=(self.conversion_goal if self.conversion_goal is not None
+                    else self.v_goal_multiplier * self.budget / (self.cpa + EPS)),
             C_goal=self.ctg_multiplier * self.budget,
             K=self.rollout.K,
             rtg_scale=self.rollout.rtg_scale,
@@ -213,6 +222,10 @@ class DGABShareStrategy(BaseBiddingStrategy):
             'state_raw': state_raw.tolist(),
             'state_normalized': state_norm.tolist(),
             'v_goal_multiplier': self.v_goal_multiplier,
+            'conversion_goal': (self.conversion_goal
+                                if self.conversion_goal is not None
+                                else self.v_goal_multiplier * self.budget
+                                / (self.cpa + EPS)),
             'ctg_multiplier': self.ctg_multiplier,
             'ctg_replenishment_count': self.ctg_replenishment_count,
             'rtg_v': float(rtg_now[0]),

@@ -117,6 +117,7 @@ def parse_args():
     ap.add_argument('--output', type=str, default='benchmark_multistrat',
                     help='Output file prefix (default: benchmark_multistrat)')
     ap.add_argument('--ctg_multiplier', type=float, default=1.0)
+    ap.add_argument('--conversion_goal', type=float, default=None)
     ap.add_argument('--output_dir', type=str, default=None,
                     help='Output directory (default: {project}/exp_data)')
     ap.add_argument('--device', type=str, default=None,
@@ -584,7 +585,11 @@ def run_one_episode(controller, player_index, agent_factory, pvalue_mean_base,
     player_budget = float(budgets[player_index])
     player_v_goal_multiplier = float(
         getattr(agents[player_index], 'v_goal_multiplier', np.nan))
-    if (np.isfinite(player_v_goal_multiplier)
+    fixed_conversion_goal = getattr(agents[player_index], 'conversion_goal', None)
+    if fixed_conversion_goal is not None:
+        conversion_goal = float(fixed_conversion_goal)
+        conversion_completion_rate = player_reward / conversion_goal
+    elif (np.isfinite(player_v_goal_multiplier)
             and player_v_goal_multiplier > 0
             and player_cpa_target > 0):
         conversion_goal = (
@@ -823,6 +828,7 @@ def main():
         budget_rate=args.budget_rate,
         v_goal_multiplier=args.v_goal_multiplier,
         ctg_multiplier=args.ctg_multiplier,
+        conversion_goal=args.conversion_goal,
         ctg_replenishment_rule='if multiplier < 1 and CTG reaches zero with remaining budget > 0, reset CTG to multiplier * remaining budget',
     )
     manifest['strategies'] = args.strategies

@@ -48,6 +48,7 @@ class CostMultiplierTests(unittest.TestCase):
         strategy.budget = 100.0
         strategy.cpa = 2.0
         strategy.v_goal_multiplier = 1.0
+        strategy.conversion_goal = None
         strategy.ctg_multiplier = 1.3
         strategy.exploration_seed = 42
         strategy.rollout = CaptureRollout()
@@ -55,6 +56,28 @@ class CostMultiplierTests(unittest.TestCase):
         self.assertEqual(strategy.remaining_budget, 100.0)
         self.assertAlmostEqual(strategy.rollout.kwargs['C_goal'], 130.0)
         self.assertAlmostEqual(strategy.rollout.kwargs['V_goal'], 50.0)
+
+    def test_reset_uses_fixed_raw_conversion_goal(self):
+        class CaptureRollout:
+            actor = object()
+            K = 20
+            rtg_scale = 1000.0
+            device = 'cpu'
+
+            def __init__(self, actor=None, **kwargs):
+                self.kwargs = kwargs
+
+        strategy = object.__new__(DGABShareStrategy)
+        strategy.budget = 100.0
+        strategy.cpa = 2.0
+        strategy.v_goal_multiplier = 1.0
+        strategy.conversion_goal = 4000.0
+        strategy.ctg_multiplier = 1.0
+        strategy.exploration_seed = 42
+        strategy.rollout = CaptureRollout()
+        strategy.reset()
+        self.assertAlmostEqual(strategy.rollout.kwargs['V_goal'], 4000.0)
+        self.assertAlmostEqual(strategy.rollout.kwargs['C_goal'], 100.0)
 
     def test_subunit_target_replenishes_from_live_remaining_budget(self):
         strategy = object.__new__(DGABShareStrategy)
