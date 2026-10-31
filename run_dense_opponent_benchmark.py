@@ -55,6 +55,8 @@ def parse_args():
     parser.add_argument("--dgabsearch_dir", default=None)
     parser.add_argument("--dgabsearch_ckpt", default=None)
     parser.add_argument("--v_goal_multiplier", type=float, default=15.0)
+    parser.add_argument("--conversion_goal", type=float, default=None,
+                        help="Fixed raw conversion-to-go for every advertiser")
     parser.add_argument("--ctg_multiplier", type=float, default=1.0)
     parser.add_argument("--action_multiplier", type=float, default=1.0)
     parser.add_argument("--ablation_model_root", default=project_path("saved_model", "dgab_ablation"))
@@ -69,6 +71,10 @@ def parse_args():
 args = parse_args()
 if not math.isfinite(args.ctg_multiplier) or args.ctg_multiplier <= 0:
     raise ValueError('--ctg_multiplier must be finite and > 0')
+if (args.conversion_goal is not None
+        and (not math.isfinite(args.conversion_goal)
+             or args.conversion_goal <= 0)):
+    raise ValueError('--conversion_goal must be finite and > 0')
 
 BC_DIR = project_path("saved_model", "BC_dense", "checkpoint_00011000")
 BCQ_DIR = project_path("saved_model", "BCQ_dense", "checkpoint_00008000")
@@ -248,6 +254,7 @@ def make_dgabshare_v15(budget, cpa, category, exploration_seed=0, **kwargs):
             "device": benchmark.DEVICE,
             "K": 20,
             "v_goal_multiplier": args.v_goal_multiplier,
+            "conversion_goal": args.conversion_goal,
             "ctg_multiplier": args.ctg_multiplier,
             "exploration_scale": 0.0,
             "exploration_rho": 0.8,
@@ -303,6 +310,9 @@ benchmark_args = [
     "--output", args.output,
     "--fail_fast",
 ]
+
+if args.conversion_goal is not None:
+    benchmark_args.extend(["--conversion_goal", str(args.conversion_goal)])
 
 if args.advertisers is not None:
     benchmark_args.extend(["--advertisers", *[str(index) for index in args.advertisers]])
